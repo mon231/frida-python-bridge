@@ -1,0 +1,50 @@
+{
+  "name": "frida-python-bridge",
+  "version": "0.1.0",
+  "description": "A Frida module to introspect and drive a live CPython interpreter at runtime (the CPython analog of frida-il2cpp-bridge / frida-java-bridge).",
+  "type": "module",
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "exports": "./dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=16"
+  },
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "test": "python test/run",
+    "prepublishOnly": "npm run build"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mon231/frida-python-bridge.git"
+  },
+  "keywords": [
+    "frida",
+    "frida-gum",
+    "frida-gum-bridge",
+    "cpython",
+    "python",
+    "bridge",
+    "instrumentation",
+    "reverse-engineering"
+  ],
+  "author": "Ariel Tubul",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/mon231/frida-python-bridge/issues"
+  },
+  "homepage": "https://github.com/mon231/frida-python-bridge#readme",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "devDependencies": {
+    "@types/frida-gum": "^19.0.0",
+    "typescript": "^5.4.0"
+  }
+}

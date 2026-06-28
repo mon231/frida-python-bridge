@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "target": "es2022",
+    "lib": ["es2022"],
+    "moduleResolution": "node",
+    "outDir": "dist",
+    "outFile": "dist/index.js",
+    "sourceRoot": ".",
+    "declaration": true,
+    "sourceMap": true,
+    "strict": true,
+    "stripInternal": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "types": ["frida-gum"]
+  },
+  "include": ["lib/**/*.ts"],
+  "exclude": ["dist", "test", "example", "node_modules"]
+}

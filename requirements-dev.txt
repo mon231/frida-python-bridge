@@ -1,0 +1,5 @@
+# Python tooling for running the test suite (pytest harness in test/).
+# Pin Frida to the v17 line to match @types/frida-gum ^19 used by the bridge.
+frida>=17,<18
+frida-tools
+pytest>=7

@@ -254,6 +254,39 @@ rpc.exports = {
                 r.$dispose();
                 assert(after > before);
             });
+
+            // long-tail marshalling
+            t("marshal datetime", () => {
+                const d = Python.eval("__import__('datetime').datetime(2021, 6, 28, 1, 2, 3)", { toJS: true });
+                assert(d instanceof Date && d.getFullYear() === 2021);
+            });
+            t("marshal date", () => {
+                const d = Python.eval("__import__('datetime').date(2021, 6, 28)", { toJS: true });
+                assert(d instanceof Date);
+            });
+            t("marshal Decimal", () => {
+                assertEq(Python.eval("__import__('decimal').Decimal('1.5')", { toJS: true }), 1.5);
+            });
+            t("dict $entries preserves non-str keys", () => {
+                const entries = Python.eval("{1: 'a', 2: 'b'}").$entries();
+                entries.sort((x, y) => x[0] - y[0]);
+                assertJson(entries, [[1, "a"], [2, "b"]]);
+            });
+
+            // deterministic no-leak check: disposed retains drain at the perform boundary
+            t("no refcount leak after dispose+drain", () => {
+                const sys = Python.import("sys");
+                const target = Python.eval("object()");
+                const base = sys.getrefcount(target).$toJS();
+                const retained = [];
+                for (let i = 0; i < 50; i++) retained.push(target.$retain());
+                const high = sys.getrefcount(target).$toJS();
+                // performNow drains queued decrefs at its boundary.
+                Python.performNow(() => retained.forEach(r => r.$dispose()));
+                const after = sys.getrefcount(target).$toJS();
+                assertEq(high - base, 50);
+                assertEq(after, base);
+            });
         });
 
         return results;

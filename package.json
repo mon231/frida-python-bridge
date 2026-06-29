@@ -7,8 +7,12 @@
   "module": "dist/index.js",
   "exports": "./dist/index.js",
   "types": "dist/index.d.ts",
+  "bin": {
+    "frida-python-bridge": "cli/main.py"
+  },
   "files": [
-    "dist"
+    "dist",
+    "cli"
   ],
   "engines": {
     "node": ">=16"

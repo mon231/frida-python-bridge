@@ -108,16 +108,17 @@ Ergonomic Proxy access plus explicit `$`-prefixed methods (which never collide w
 attribute names):
 
 `obj.attr` / `obj.attr = v` (attribute get/set) · `obj(...args)` (call) · `for (const x of obj)`
-(iterate) · `$get`/`$set`/`$call`/`$item`/`$setItem` · `$str`/`$repr`/`$type`/`$className`/`$dir`/
-`$len` · `$toJS` · `$buffer` (buffer protocol → `ArrayBuffer`) · `$equals`/`$hash` ·
-`$retain`/`$dispose`.
+(iterate) · `$get`/`$set`/`$call`/`$item`/`$setItem` · `$entries` (mapping pairs, preserves
+non-string keys) · `$str`/`$repr`/`$type`/`$className`/`$dir`/`$len` · `$toJS` · `$buffer` (buffer
+protocol → `ArrayBuffer`) · `$equals`/`$hash` · `$retain`/`$dispose`.
 
 Pass a trailing `Python.kw({...})` to `$call`/`obj(...)` for keyword arguments. Python exceptions
 surface as `Python.PythonException` (`.pythonType`, `.message`, `.traceback`).
 
 **Marshalling** (`$toJS` / `toJS`): `int`/`float`/`bool`/`str`/`None` ↔ JS primitives, big ints →
 `BigInt`, `bytes`/`bytearray` → `ArrayBuffer`, `list`/`tuple`/`set`/`frozenset` → array,
-`dict` → object, `complex` → `{ real, imag }`; anything else stays a wrapped `PyObject`.
+`dict` → object (use `$entries()` for non-string keys), `complex` → `{ real, imag }`,
+`datetime`/`date` → `Date`, `Decimal` → number; anything else stays a wrapped `PyObject`.
 
 ## Hooking
 
@@ -166,6 +167,23 @@ Python.perform(() => {
   });
 });
 ```
+
+## CLI
+
+A small `frida`-wrapping CLI ships with the package (`bin: frida-python-bridge`, requires
+`pip install frida`):
+
+```sh
+# attach to a running interpreter...
+frida-python-bridge -n python.exe info
+frida-python-bridge -p 1234 eval "sys.version"
+frida-python-bridge -n python dump collections.OrderedDict   # list live instances
+
+# ...or spawn one (-f PROGRAM, with each child arg as a --arg to avoid shell quoting)
+frida-python-bridge -f /usr/bin/python3 --arg=myscript.py repl
+```
+
+Subcommands: `info`, `eval <expr>`, `exec <code>`, `dump <dotted.Type>`, `repl`.
 
 ## Develop / build / test
 

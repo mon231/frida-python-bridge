@@ -201,8 +201,42 @@ namespace Python {
             return result;
         }
 
+        // datetime.datetime / datetime.date -> JS Date (via isoformat()).
+        if (type.equals(typeHandle("datetime", "datetime")) || type.equals(typeHandle("datetime", "date"))) {
+            try {
+                const iso = new PyObject(handle, { owned: false }).$get("isoformat").$call().$str();
+                const d = new Date(iso);
+                return isNaN(d.getTime()) ? iso : d;
+            } catch (_e) {
+                api.PyErr_Clear();
+            }
+        }
+        // decimal.Decimal -> JS number (precision may be lost; use $str() for exact).
+        if (type.equals(typeHandle("decimal", "Decimal"))) {
+            return parseFloat(new PyObject(handle, { owned: false }).$str());
+        }
+
         // Unknown / user-defined type: return a wrapper that owns its own reference.
         return new PyObject(handle, { owned: false });
+    }
+
+    // Cache of `module.name` type objects (kept alive so their addresses stay valid).
+    const _typeCache: Record<string, PyObject> = {};
+
+    /** Resolve and cache a type object's handle (e.g. ("datetime","datetime")). GIL held. */
+    function typeHandle(moduleName: string, typeName: string): NativePointer {
+        const key = `${moduleName}.${typeName}`;
+        let cached = _typeCache[key];
+        if (cached === undefined) {
+            try {
+                cached = (importModule(moduleName) as any)[typeName].__pyobject as PyObject;
+            } catch (_e) {
+                getApi().PyErr_Clear();
+                cached = new PyObject(NULL, { owned: true }); // sentinel; never matches a live type
+            }
+            _typeCache[key] = cached;
+        }
+        return cached.handle;
     }
 
     /** Iterate any Python iterable into a JS array (each item via toJS). GIL held. */

@@ -11,13 +11,18 @@ namespace Python {
     export class PyObject extends NativeStruct {
         private weakId = -1;
         private disposed = false;
+        // Shared between this wrapper and its GC finalizer so the handle is enqueued for
+        // Py_DecRef exactly once (whether released by GC or by $dispose).
+        private releaseCell: { released: boolean } | null = null;
 
         constructor(handle: NativePointer, opts?: { owned?: boolean }) {
             super(handle);
             if (!handle.isNull()) {
                 const api = getApi();
                 if (!(opts && opts.owned)) api.Py_IncRef(handle);
-                this.weakId = Script.bindWeak(this, makeFinalizer(handle));
+                const cell = { released: false };
+                this.releaseCell = cell;
+                this.weakId = Script.bindWeak(this, makeFinalizer(handle, cell));
             }
         }
 
@@ -102,6 +107,30 @@ namespace Python {
             api.Py_DecRef(k);
             api.Py_DecRef(v);
             if (rc !== 0) checkError();
+        }
+
+        /**
+         * Mapping entries as `[key, value]` pairs (preserves non-string keys, unlike
+         * `$toJS()` which coerces dict keys to strings). Works for any object with `.items()`.
+         */
+        $entries(): Array<[any, any]> {
+            const api = getApi();
+            const items = this.$get("items").$call();
+            const out: Array<[any, any]> = [];
+            const iter = api.PyObject_GetIter(items.handle) as NativePointer;
+            if (!iter.isNull()) {
+                let pair = api.PyIter_Next(iter) as NativePointer;
+                while (!pair.isNull()) {
+                    const k = api.PyTuple_GetItem(pair, 0) as NativePointer; // borrowed
+                    const v = api.PyTuple_GetItem(pair, 1) as NativePointer; // borrowed
+                    out.push([toJS(k), toJS(v)]);
+                    api.Py_DecRef(pair);
+                    pair = api.PyIter_Next(iter) as NativePointer;
+                }
+                api.Py_DecRef(iter);
+                api.PyErr_Clear();
+            }
+            return out;
         }
 
         /** `repr(self)`. */
@@ -192,6 +221,12 @@ namespace Python {
         $dispose(): void {
             if (this.disposed) return;
             this.disposed = true;
+            // Enqueue the decref directly (don't rely on unbindWeak invoking the finalizer);
+            // the shared cell guards against the GC finalizer also enqueueing it.
+            if (this.releaseCell !== null && !this.releaseCell.released && !this.handle.isNull()) {
+                this.releaseCell.released = true;
+                pendingDecrefs.push(this.handle);
+            }
             if (this.weakId !== -1) {
                 Script.unbindWeak(this.weakId);
                 this.weakId = -1;
@@ -233,8 +268,10 @@ namespace Python {
      * controlled point ({@link decrefAllPending}, called at perform() boundaries) so a
      * decref/dealloc never runs in the middle of another bridge operation.
      */
-    function makeFinalizer(handle: NativePointer): () => void {
+    function makeFinalizer(handle: NativePointer, cell: { released: boolean }): () => void {
         return () => {
+            if (cell.released) return;
+            cell.released = true;
             pendingDecrefs.push(handle);
         };
     }

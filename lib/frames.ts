@@ -8,7 +8,25 @@ namespace Python {
         lineno: number;
     }
 
-    /** Extract {name, filename, lineno} from a (borrowed) frame pointer. */
+    /** Read a string attribute with immediate decref (no wrappers). GIL held. */
+    function rawAttrStr(obj: NativePointer, attr: string): string {
+        const api = getApi();
+        const a = api.PyObject_GetAttrString(obj, Memory.allocUtf8String(attr)) as NativePointer; // new ref
+        if (a.isNull()) {
+            api.PyErr_Clear();
+            return "<unknown>";
+        }
+        const s = utf8Of(a);
+        api.Py_DecRef(a);
+        return s;
+    }
+
+    /**
+     * Extract {name, filename, lineno} from a (borrowed) frame pointer using raw C calls
+     * with immediate decref. NB: deliberately avoids creating PyObject wrappers here -
+     * registering Script.bindWeak finalizers per frame while walking the stack inside a
+     * hook trampoline churns the GC and was a source of crashes.
+     */
     function frameInfo(frame: NativePointer): Frame {
         const api = getApi();
         let name = "<unknown>";
@@ -16,13 +34,9 @@ namespace Python {
         if (api.PyFrame_GetCode !== undefined) {
             const code = api.PyFrame_GetCode(frame) as NativePointer; // new ref
             if (!code.isNull()) {
-                const codeObj = new PyObject(code, { owned: true });
-                try {
-                    name = codeObj.$get("co_name").$str();
-                    filename = codeObj.$get("co_filename").$str();
-                } catch (_e) {
-                    api.PyErr_Clear();
-                }
+                name = rawAttrStr(code, "co_name");
+                filename = rawAttrStr(code, "co_filename");
+                api.Py_DecRef(code);
             }
         }
         return { name, filename, lineno: api.PyFrame_GetLineNumber(frame) as number };

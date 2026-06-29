@@ -3,6 +3,10 @@ namespace Python {
 
     let _evalFrameCb: any = null;
     let _frameHookInstalled = false;
+    // Retain every eval-frame callback for the lifetime of the script. The eval-frame
+    // function is process-wide, so other threads may still be executing inside our
+    // callback when we restore the default; letting it be GC'd would be a use-after-free.
+    const _keptFrameCbs: any[] = [];
 
     function currentInterp(): NativePointer {
         const api = getApi();
@@ -52,6 +56,7 @@ namespace Python {
             "pointer",
             ["pointer", "pointer", "int"]
         );
+        _keptFrameCbs.push(_evalFrameCb);
 
         api._PyInterpreterState_SetEvalFrameFunc(currentInterp(), _evalFrameCb);
         _frameHookInstalled = true;

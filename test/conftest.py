@@ -34,14 +34,17 @@ def _build_agent():
     return bridge + "\n" + agent
 
 
-def _run_suite():
-    if "results" in _cache:
-        return _cache["results"]
+# Tests per fresh injection. The agent runs in Frida's QuickJS; accumulating many
+# instrumentation operations (wrappers/bindWeak/hooks/trace) in a single long-lived
+# script eventually destabilizes the runtime, so we shard the suite across several
+# fresh injections to keep per-script cumulative state low.
+_SHARD = 10
 
-    try:
-        import frida
-    except ImportError as exc:  # pragma: no cover
-        raise pytest.UsageError("the `frida` Python package is required: pip install frida") from exc
+
+def _inject_and_run(lo, hi):
+    """Spawn a fresh CPython host, inject the agent, run tests [lo, hi). Returns
+    {results, total}. Raises on a crash / agent error so the caller can retry."""
+    import frida
 
     agent_source = _build_agent()
     code = "import sys; sys.path.insert(0, r'{}'); import app; app.main()".format(FIXTURES)
@@ -62,10 +65,24 @@ def _run_suite():
         )
         script.load()
         device.resume(pid)
-        # Let the interpreter finish initializing and create instances.
-        time.sleep(2.0)
+
         exports = getattr(script, "exports_sync", None) or script.exports
-        results = exports.run()
+
+        # Wait until the interpreter is initialized (CI runners can be slow).
+        ready = False
+        for _ in range(300):  # up to ~30s
+            try:
+                if exports.ready():
+                    ready = True
+                    break
+            except Exception:
+                pass
+            time.sleep(0.1)
+        if not ready:
+            raise RuntimeError("interpreter did not become available within 30s")
+        time.sleep(0.3)
+
+        out = exports.run(lo, hi)
     finally:
         try:
             if script is not None:
@@ -79,6 +96,38 @@ def _run_suite():
 
     if errors:
         raise RuntimeError("frida agent reported errors: " + "; ".join(str(e) for e in errors))
+    return out
+
+
+def _run_suite():
+    if "results" in _cache:
+        return _cache["results"]
+
+    try:
+        import frida  # noqa: F401
+    except ImportError as exc:  # pragma: no cover
+        raise pytest.UsageError("the `frida` Python package is required: pip install frida") from exc
+
+    results = []
+    lo = 0
+    total = None
+    while total is None or lo < total:
+        # Each shard runs in its own process; retry a shard a few times if the QuickJS
+        # script is torn down mid-run (a rare environmental flake).
+        last_err = None
+        for _attempt in range(4):
+            try:
+                out = _inject_and_run(lo, lo + _SHARD)
+                results.extend(out["results"])
+                total = out["total"]
+                last_err = None
+                break
+            except Exception as exc:
+                last_err = exc
+                time.sleep(0.5)
+        if last_err is not None:
+            raise last_err
+        lo += _SHARD
 
     _cache["results"] = results
     return results

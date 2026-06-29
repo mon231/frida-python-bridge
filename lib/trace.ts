@@ -16,23 +16,31 @@ namespace Python {
     // Keep callbacks alive while installed.
     let _profileCb: any = null;
     let _traceCb: any = null;
+    // Retain every trace callback for the script's lifetime (a callback may still be
+    // executing when it is removed; letting it be GC'd would be a use-after-free).
+    const _keptTraceCbs: any[] = [];
 
     function makeTraceCallback(handler: TraceHandler): any {
-        return new NativeCallback(
+        const cb = new NativeCallback(
             ((_obj: NativePointer, frame: NativePointer, what: number, _arg: NativePointer): number => {
                 // CPython disables tracing while a C trace func runs, so re-entrancy is safe.
                 try {
                     const api = getApi();
                     let funcName = "<unknown>";
+                    // Use raw C calls with immediate decref - do NOT create PyObject wrappers
+                    // (Script.bindWeak) inside a trace callback; per-event finalizer churn
+                    // during execution is unstable.
                     if (api.PyFrame_GetCode !== undefined && !frame.isNull()) {
                         const code = api.PyFrame_GetCode(frame) as NativePointer;
                         if (!code.isNull()) {
-                            const c = new PyObject(code, { owned: true });
-                            try {
-                                funcName = c.$get("co_name").$str();
-                            } catch (_e) {
+                            const nameAttr = api.PyObject_GetAttrString(code, Memory.allocUtf8String("co_name")) as NativePointer;
+                            if (!nameAttr.isNull()) {
+                                funcName = utf8Of(nameAttr);
+                                api.Py_DecRef(nameAttr);
+                            } else {
                                 api.PyErr_Clear();
                             }
+                            api.Py_DecRef(code);
                         }
                     }
                     handler({ what: WHAT_NAMES[what] ?? String(what), frame, funcName });
@@ -44,6 +52,8 @@ namespace Python {
             "int",
             ["pointer", "pointer", "int", "pointer"]
         );
+        _keptTraceCbs.push(cb);
+        return cb;
     }
 
     /**

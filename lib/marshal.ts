@@ -201,19 +201,25 @@ namespace Python {
             return result;
         }
 
-        // datetime.datetime / datetime.date -> JS Date (via isoformat()).
+        // datetime.datetime / datetime.date -> JS Date (via isoformat()). Raw calls only
+        // (no PyObject wrappers) to avoid per-call bindWeak/GC churn during marshalling.
         if (type.equals(typeHandle("datetime", "datetime")) || type.equals(typeHandle("datetime", "date"))) {
-            try {
-                const iso = new PyObject(handle, { owned: false }).$get("isoformat").$call().$str();
-                const d = new Date(iso);
-                return isNaN(d.getTime()) ? iso : d;
-            } catch (_e) {
-                api.PyErr_Clear();
+            const method = api.PyObject_GetAttrString(handle, Memory.allocUtf8String("isoformat")) as NativePointer;
+            if (!method.isNull()) {
+                const ret = api.PyObject_CallObject(method, NULL) as NativePointer;
+                api.Py_DecRef(method);
+                if (!ret.isNull()) {
+                    const iso = utf8Of(ret);
+                    api.Py_DecRef(ret);
+                    const d = new Date(iso);
+                    return isNaN(d.getTime()) ? iso : d;
+                }
             }
+            api.PyErr_Clear();
         }
-        // decimal.Decimal -> JS number (precision may be lost; use $str() for exact).
+        // decimal.Decimal -> JS number (precision may be lost; read $str() for exact).
         if (type.equals(typeHandle("decimal", "Decimal"))) {
-            return parseFloat(new PyObject(handle, { owned: false }).$str());
+            return parseFloat(display(handle));
         }
 
         // Unknown / user-defined type: return a wrapper that owns its own reference.

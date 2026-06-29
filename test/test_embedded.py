@@ -88,9 +88,17 @@ rpc.exports = { run() { return Python.perform(() => ({
         script = session.create_script(agent_source)
         script.load()
         device.resume(pid)
-        time.sleep(2.0)
         exports = getattr(script, "exports_sync", None) or script.exports
-        res = exports.run()
+        # Poll run() until the embedded interpreter is initialized.
+        res = None
+        for _ in range(300):  # up to ~30s
+            try:
+                res = exports.run()
+                if res.get("available"):
+                    break
+            except Exception:
+                pass
+            time.sleep(0.1)
     finally:
         try:
             if script is not None:
@@ -102,6 +110,7 @@ rpc.exports = { run() { return Python.perform(() => ({
         except Exception:
             pass
 
+    assert res is not None, "embedded interpreter did not become available within 30s"
     assert res["available"] is True
     assert res["impl"] == "cpython"
     assert res["greeters"] >= 2

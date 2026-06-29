@@ -6,8 +6,11 @@ interpreter from the command line.
 
   frida-python-bridge -n python.exe info
   frida-python-bridge -p 1234 eval "sys.version"
-  frida-python-bridge -f "python -c 'import time; \\nwhile 1: time.sleep(1)'" repl
   frida-python-bridge -n python dump collections.OrderedDict
+
+  # spawn a target: -f PROGRAM, with each child arg as a separate --arg (no shell quoting).
+  # On Windows especially, prefer --arg over packing args into the -f string.
+  frida-python-bridge -f python --arg=-c --arg="import time;\nwhile 1: time.sleep(1)" repl
 
 Requires the `frida` Python package (pip install frida).
 """
@@ -92,8 +95,8 @@ def attach(args):
         sys.exit("specify a target: -n NAME, -p PID, or -f 'PROGRAM ARGS'")
 
     script = session.create_script(build_agent())
-    script.on("message", lambda m, d: sys.stderr.write("[agent] %s\n" % (m.get("stack") or m.get("description")))
-              if m["type"] == "error" else None)
+    script.on("message", (lambda m, d: sys.stderr.write("[agent] %s\n" % (m.get("stack") or m.get("description")))
+              if m["type"] == "error" else None))
     script.load()
     if spawned_pid is not None:
         device.resume(spawned_pid)

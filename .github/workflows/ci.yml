@@ -78,6 +78,42 @@ jobs:
             echo "::notice::frida not installable on free-threaded Python yet - skipping tests"
           fi
 
+  legacy-targets:
+    # The bridge supports CPython 3.6+. Frida itself no longer installs on 3.6/3.7, so we
+    # run pytest/frida on a modern HOST python and inject into an old TARGET interpreter
+    # (frida injects regardless of the target's version). ubuntu-22.04 still ships 3.6/3.7.
+    name: target Python ${{ matrix.target }} (host 3.11)
+    runs-on: ubuntu-22.04
+    continue-on-error: true # old EOL interpreters / static-build symbol export are best-effort
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ["3.6", "3.7"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20.x"
+      - name: Set up TARGET Python ${{ matrix.target }}
+        id: target
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.target }}
+          update-environment: false
+      - name: Set up HOST Python (runs frida + pytest)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: |
+          npm ci
+          npm run build
+      - run: pip install -r requirements-dev.txt
+      - run: sudo sysctl kernel.yama.ptrace_scope=0
+      - name: Run core suite against the ${{ matrix.target }} target
+        env:
+          FPB_TARGET_PYTHON: ${{ steps.target.outputs.python-path }}
+        run: pytest test/test_bridge.py
+
   lint:
     name: typecheck
     runs-on: ubuntu-latest

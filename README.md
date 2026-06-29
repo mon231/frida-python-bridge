@@ -4,7 +4,7 @@ A [Frida](https://frida.re) module to **introspect and drive a live CPython inte
 runtime — the CPython analog of [`frida-il2cpp-bridge`](https://github.com/vfsfitvnm/frida-il2cpp-bridge)
 (IL2Cpp/Unity) and [`frida-java-bridge`](https://github.com/frida/frida-java-bridge) (`Java.use`/`Java.perform`).
 
-It lets you attach to any process that embeds CPython 3.8+ and, from a Frida agent, call into the
+It lets you attach to any process that embeds CPython 3.6+ and, from a Frida agent, call into the
 interpreter with a small ergonomic API: evaluate code, import modules, construct objects, read and
 set attributes, call methods, **find live instances**, read **class names**, and **install hooks**
 on Python functions and methods.
@@ -27,7 +27,7 @@ Python.perform(() => {
 });
 ```
 
-> Status: **working** on CPython 3.8–3.13, Windows/Linux/macOS. CPython only (PyPy/Jython/GraalPy
+> Status: **working** on CPython 3.6–3.13, Windows/Linux/macOS. CPython only (PyPy/Jython/GraalPy
 > are detected and refused). Includes method/function hooking, per-thread tracing/profiling, PEP 523
 > frame-eval hooking, stdout/stderr capture, frame/stack introspection, and sub-interpreter
 > enumeration. See [PLAN.md](./PLAN.md) for the remaining roadmap.
@@ -208,7 +208,8 @@ introspection, `choose`, and hooking — each surfaced as its own test case. It 
 ## CI / publishing
 
 - [`.github/workflows/ci.yml`](./.github/workflows/ci.yml) — matrix of {Ubuntu, macOS, Windows} ×
-  Python {3.8 … 3.13}, plus a free-threaded `3.13t` lane and a typecheck job.
+  Python {3.8 … 3.13}, a `legacy-targets` job that injects into 3.6/3.7 interpreters from a
+  modern frida host, a free-threaded `3.13t` lane, and a typecheck job.
 - [`.github/workflows/release.yml`](./.github/workflows/release.yml) — on a `v*` tag: build, test,
   then `npm publish --provenance`. Requires an `NPM_TOKEN` repo secret (npm *Automation* token).
   Release with `npm version <patch|minor|major>` then `git push --follow-tags`.

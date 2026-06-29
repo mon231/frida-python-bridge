@@ -46,8 +46,13 @@ def _inject_and_run(lo, hi):
     code = "import time\nwhile True: time.sleep(0.5)"
     env = dict(os.environ, PYTHONPATH=FIXTURES + os.pathsep + os.environ.get("PYTHONPATH", ""))
 
+    # The TARGET interpreter may differ from the host running pytest/frida: frida injects
+    # the bridge into any CPython (3.6+) regardless of its version, so we can exercise old
+    # interpreters from a modern frida host. Set FPB_TARGET_PYTHON to a 3.6/3.7 binary.
+    target_python = os.environ.get("FPB_TARGET_PYTHON") or sys.executable
+
     device = frida.get_local_device()
-    pid = device.spawn([sys.executable, "-c", code], env=env)
+    pid = device.spawn([target_python, "-c", code], env=env)
 
     script = None
     errors = []

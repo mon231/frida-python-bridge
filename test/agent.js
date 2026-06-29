@@ -51,7 +51,8 @@ rpc.exports = {
 
         Python.perform(() => {
             t("available", () => assert(Python.available === true));
-            t("version is 3.x", () => assert(Python.version.major === 3));
+            t("version is supported (3.6+)", () =>
+                assert(Python.version.major === 3 && Python.version.minor >= 6));
 
             // marshalling / eval
             t("eval int", () => assertEq(Python.eval("1 + 2", { toJS: true }), 3));

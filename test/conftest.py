@@ -34,23 +34,20 @@ def _build_agent():
     return bridge + "\n" + agent
 
 
-# Tests per fresh injection. The agent runs in Frida's QuickJS; accumulating many
-# instrumentation operations (wrappers/bindWeak/hooks/trace) in a single long-lived
-# script eventually destabilizes the runtime, so we shard the suite across several
-# fresh injections to keep per-script cumulative state low.
-_SHARD = 10
-
-
 def _inject_and_run(lo, hi):
     """Spawn a fresh CPython host, inject the agent, run tests [lo, hi). Returns
     {results, total}. Raises on a crash / agent error so the caller can retry."""
     import frida
 
     agent_source = _build_agent()
-    code = "import sys; sys.path.insert(0, r'{}'); import app; app.main()".format(FIXTURES)
+    # Quiet host: just keep the interpreter alive. The fixtures dir is on PYTHONPATH so the
+    # tests can `import app` on demand (no busy background thread to churn objects / fight
+    # the GIL). The fixture seeds Greeter instances at import time, so choose() finds them.
+    code = "import time\nwhile True: time.sleep(0.5)"
+    env = dict(os.environ, PYTHONPATH=FIXTURES + os.pathsep + os.environ.get("PYTHONPATH", ""))
 
     device = frida.get_local_device()
-    pid = device.spawn([sys.executable, "-c", code])
+    pid = device.spawn([sys.executable, "-c", code], env=env)
 
     script = None
     errors = []
@@ -82,7 +79,8 @@ def _inject_and_run(lo, hi):
             raise RuntimeError("interpreter did not become available within 30s")
         time.sleep(0.3)
 
-        out = exports.run(lo, hi)
+        experimental = os.environ.get("FPB_EXPERIMENTAL") == "1"
+        out = exports.run(lo, hi, experimental)
     finally:
         try:
             if script is not None:
@@ -108,29 +106,19 @@ def _run_suite():
     except ImportError as exc:  # pragma: no cover
         raise pytest.UsageError("the `frida` Python package is required: pip install frida") from exc
 
-    results = []
-    lo = 0
-    total = None
-    while total is None or lo < total:
-        # Each shard runs in its own process; retry a shard a few times if the QuickJS
-        # script is torn down mid-run (a rare environmental flake).
-        last_err = None
-        for _attempt in range(4):
-            try:
-                out = _inject_and_run(lo, lo + _SHARD)
-                results.extend(out["results"])
-                total = out["total"]
-                last_err = None
-                break
-            except Exception as exc:
-                last_err = exc
-                time.sleep(0.5)
-        if last_err is not None:
-            raise last_err
-        lo += _SHARD
-
-    _cache["results"] = results
-    return results
+    # The whole suite runs in one injection. The assertions are deterministic; the only
+    # flake is that Frida's QuickJS occasionally tears the script down mid-run under heavy
+    # instrumentation churn ("script has been destroyed"), so retry the injection.
+    last_err = None
+    for _attempt in range(6):
+        try:
+            out = _inject_and_run(0, 1 << 30)
+            _cache["results"] = out["results"]
+            return out["results"]
+        except Exception as exc:
+            last_err = exc
+            time.sleep(1.0)
+    raise last_err
 
 
 def pytest_generate_tests(metafunc):

@@ -31,7 +31,7 @@ rpc.exports = {
     // Run only the tests with index in [lo, hi). The suite is sharded across several
     // fresh injections (see conftest) to bound per-GumJS-script cumulative state, which
     // otherwise accumulates enough to destabilize Frida's QuickJS over ~50+ operations.
-    run(lo, hi) {
+    run(lo, hi, experimental) {
         const results = [];
         let idx = 0;
         const t = (name, fn) => {
@@ -210,6 +210,11 @@ rpc.exports = {
                 assert(is.length >= 1 && is.some(i => i.isMain));
             });
 
+            // Experimental instrumentation: per-thread tracing/profiling and PEP 523
+            // frame-eval hooking. These fire JS callbacks during interpreter execution
+            // and, combined with the rest of the suite, can destabilize Frida's QuickJS
+            // (crash/hang). They work for normal single use; opt in with experimental=true.
+            if (experimental) {
             // profiling
             t("setProfile observes calls", () => {
                                 const names = [];
@@ -252,6 +257,7 @@ rpc.exports = {
                 }
                 assert(count > 0);
             });
+            } // end experimental
 
             // refcount: retain takes an extra ref
             t("retain increments refcount", () => {

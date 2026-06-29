@@ -98,10 +98,14 @@ Everything hangs off the global `Python` namespace.
 | Member | Description |
 |---|---|
 | `Python.backtrace(limit?)` | Current Python call stack → `[{ name, filename, lineno }]` (innermost first) |
-| `Python.setProfile(fn)` / `Python.unsetProfile()` | Per-thread profile hook (call/return events) |
-| `Python.setTrace(fn)` / `Python.unsetTrace()` | Per-thread trace hook (adds line events) |
+| `Python.setProfile(fn)` / `Python.unsetProfile()` | Per-thread profile hook (call/return events). **Experimental** ¹ |
+| `Python.setTrace(fn)` / `Python.unsetTrace()` | Per-thread trace hook (adds line events). **Experimental** ¹ |
 | `Python.canHookFrames()` | Whether PEP 523 frame-eval hooking is available |
-| `Python.setFrameHook(fn)` / `Python.unsetFrameHook()` | PEP 523 eval-frame hook (every frame). **Experimental / high-overhead** — handler must be cheap and not call into Python |
+| `Python.setFrameHook(fn)` / `Python.unsetFrameHook()` | PEP 523 eval-frame hook (every frame). **Experimental / high-overhead** ¹ — handler must be cheap and not call into Python |
+
+¹ These fire JS callbacks during interpreter execution; fine for targeted single use, but heavy
+sustained use can destabilize Frida's QuickJS. They're excluded from the default test suite (run
+them with `FPB_EXPERIMENTAL=1`).
 
 ### `PyObject` (wrapped)
 Ergonomic Proxy access plus explicit `$`-prefixed methods (which never collide with Python

@@ -16,7 +16,8 @@
   "scripts": {
     "build": "tsc",
     "watch": "tsc --watch",
-    "test": "python test/run",
+    "pretest": "npm run build",
+    "test": "pytest",
     "prepublishOnly": "npm run build"
   },
   "repository": {

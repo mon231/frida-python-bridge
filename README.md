@@ -27,17 +27,20 @@ Python.perform(() => {
 });
 ```
 
-> Status: **working v1** on CPython 3.8–3.13, Windows/Linux/macOS. CPython only (PyPy/Jython/GraalPy
-> are detected and refused). Method/function hooking ships in v1; deeper PEP 523 frame-eval hooking
-> is planned for v2. See [PLAN.md](./PLAN.md) for the full design and roadmap.
+> Status: **working** on CPython 3.8–3.13, Windows/Linux/macOS. CPython only (PyPy/Jython/GraalPy
+> are detected and refused). Includes method/function hooking, per-thread tracing/profiling, PEP 523
+> frame-eval hooking, stdout/stderr capture, frame/stack introspection, and sub-interpreter
+> enumeration. See [PLAN.md](./PLAN.md) for the remaining roadmap.
 
 ## How it works
 
 Frida 17's GumJS resolves CPython's exported C-API functions from the loaded `libpython` /
 `python3X.dll` / framework / static host, wraps them as `NativeFunction`s, and the bridge calls
 them with the **GIL held** (`PyGILState_Ensure`/`Release`). `PyObject` handles are wrapped in a JS
-`Proxy` for ergonomic access; references are released deterministically (`$dispose`) or on GC
-(`Script.bindWeak` → `Py_DecRef`, guarded against interpreter finalization).
+`Proxy` for ergonomic access. References use **deferred decref**: a wrapper's GC/`$dispose`
+finalizer enqueues its handle and the actual `Py_DecRef` runs at `perform()` boundaries (GIL held,
+guarded against interpreter finalization), so a decref never fires mid-operation under the
+nondeterministic GC.
 
 ## Install
 
@@ -70,23 +73,35 @@ Everything hangs off the global `Python` namespace.
 | Member | Description |
 |---|---|
 | `Python.available` | `true` when CPython is found, initialized, and not finalizing |
-| `Python.version` | `{ major, minor, micro, hex, isFreeThreaded }` |
+| `Python.version` | `{ major, minor, micro, hex, isFreeThreaded, implementation }` |
 | `Python.perform(fn)` | Acquire the GIL, run `fn`, release. **Wrap all interpreter access in this.** Returns a `Promise`. |
 | `Python.performNow(fn)` | Synchronous variant (returns `fn`'s value) |
 | `Python.$config` | `{ moduleName?, exports }` overrides for stripped/static/embedded hosts |
+| `Python.interpreters()` | Enumerate interpreters (PEP 684); `[{ id, isMain }]` |
 
 ### Code & objects
 | Member | Description |
 |---|---|
 | `Python.eval(expr, { toJS? })` | Evaluate an expression → wrapped `PyObject` (or JS value if `toJS`) |
 | `Python.exec(code, globals?)` | Run statements (no return value) |
+| `Python.capture(fn)` | Run `fn` with stdout/stderr redirected → `{ stdout, stderr, result }` |
 | `Python.importModule(name)` / `Python.import(name)` | Import a module |
 | `Python.use(dotted)` | Resolve a dotted class/callable, e.g. `Python.use("app.Greeter")` |
 | `Python.builtins` | The `builtins` module |
 | `Python.choose(predicate?)` | Enumerate live instances via `gc.get_objects()`; `predicate` is a dotted type name, a type, or `(o) => boolean` |
 | `Python.kw({ ... })` | Wrap keyword arguments for a call |
+| `Python.slice(start?, stop?, step?)` | Build a Python `slice` (for `$item`) |
 | `Python.intercept(target, name, handler)` | Hook `target.name`; returns `{ original, revert() }` |
 | `Python.interrupt()` | Raise `KeyboardInterrupt` (abort a runaway eval; 3.10+) |
+
+### Tracing & stacks
+| Member | Description |
+|---|---|
+| `Python.backtrace(limit?)` | Current Python call stack → `[{ name, filename, lineno }]` (innermost first) |
+| `Python.setProfile(fn)` / `Python.unsetProfile()` | Per-thread profile hook (call/return events) |
+| `Python.setTrace(fn)` / `Python.unsetTrace()` | Per-thread trace hook (adds line events) |
+| `Python.canHookFrames()` | Whether PEP 523 frame-eval hooking is available |
+| `Python.setFrameHook(fn)` / `Python.unsetFrameHook()` | PEP 523 eval-frame hook (every frame). **Experimental / high-overhead** — handler must be cheap and not call into Python |
 
 ### `PyObject` (wrapped)
 Ergonomic Proxy access plus explicit `$`-prefixed methods (which never collide with Python
@@ -94,10 +109,15 @@ attribute names):
 
 `obj.attr` / `obj.attr = v` (attribute get/set) · `obj(...args)` (call) · `for (const x of obj)`
 (iterate) · `$get`/`$set`/`$call`/`$item`/`$setItem` · `$str`/`$repr`/`$type`/`$className`/`$dir`/
-`$len` · `$toJS` · `$equals`/`$hash` · `$retain`/`$dispose`.
+`$len` · `$toJS` · `$buffer` (buffer protocol → `ArrayBuffer`) · `$equals`/`$hash` ·
+`$retain`/`$dispose`.
 
 Pass a trailing `Python.kw({...})` to `$call`/`obj(...)` for keyword arguments. Python exceptions
 surface as `Python.PythonException` (`.pythonType`, `.message`, `.traceback`).
+
+**Marshalling** (`$toJS` / `toJS`): `int`/`float`/`bool`/`str`/`None` ↔ JS primitives, big ints →
+`BigInt`, `bytes`/`bytearray` → `ArrayBuffer`, `list`/`tuple`/`set`/`frozenset` → array,
+`dict` → object, `complex` → `{ real, imag }`; anything else stays a wrapped `PyObject`.
 
 ## Hooking
 
@@ -124,18 +144,43 @@ Python.perform(() => {
 });
 ```
 
+## Tracing & capturing output
+
+```ts
+Python.perform(() => {
+  // Capture stdout/stderr from injected code.
+  const cap = Python.capture(() => Python.exec('print("hello")'));
+  console.log(cap.stdout); // "hello\n"
+
+  // Profile every Python call on this thread.
+  const calls = [];
+  Python.setProfile((e) => { if (e.what === "call") calls.push(e.funcName); });
+  Python.exec("def f():\n    return 1\nf()");
+  Python.unsetProfile();
+  console.log(calls); // [..., "f"]
+
+  // Read the current call stack from inside a hook.
+  Python.intercept(Python.use("app.Greeter"), "hello", (args, original) => {
+    console.log(Python.backtrace().map((f) => f.name));
+    return original(...args);
+  });
+});
+```
+
 ## Develop / build / test
 
 ```sh
 npm install
-npm run build          # tsc -> dist/index.js + dist/index.d.ts
-pip install frida frida-tools
-npm test               # spawns CPython, injects the agent, runs the assertion suite
+npm run build                       # tsc -> dist/index.js + dist/index.d.ts
+pip install -r requirements-dev.txt # frida + pytest
+pytest                              # or: npm test  (which builds first)
 ```
 
-`npm test` runs [`test/run`](./test/run): it spawns the current Python interpreter running
-[`test/fixtures/app.py`](./test/fixtures/app.py), injects `dist/index.js` + [`test/agent.js`](./test/agent.js),
-and asserts marshalling, calls, introspection, `choose`, and hooking against the live interpreter.
+The [pytest](https://pytest.org) suite ([`test/`](./test)) spawns the current Python interpreter
+running [`test/fixtures/app.py`](./test/fixtures/app.py), injects `dist/index.js` +
+[`test/agent.js`](./test/agent.js), and runs in-interpreter assertions for marshalling, calls,
+introspection, `choose`, and hooking — each surfaced as its own test case. It runs on
+**Windows, Linux and macOS**; on Linux self-injection needs `sudo sysctl kernel.yama.ptrace_scope=0`.
 [`test/manual.py`](./test/manual.py) is a lighter human-readable demo.
 
 ## CI / publishing

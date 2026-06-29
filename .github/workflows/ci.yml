@@ -32,15 +32,15 @@ jobs:
           npm ci
           npm run build
 
-      - name: Install Frida (Python bindings)
-        run: pip install --upgrade frida frida-tools
+      - name: Install Python test deps (frida + pytest)
+        run: pip install -r requirements-dev.txt
 
       - name: Relax ptrace (Linux self-injection)
         if: runner.os == 'Linux'
         run: sudo sysctl kernel.yama.ptrace_scope=0
 
       - name: Run tests
-        run: python test/run
+        run: pytest
 
   freethreaded:
     name: ubuntu / Python 3.13t (free-threaded)
@@ -58,9 +58,9 @@ jobs:
       - run: |
           npm ci
           npm run build
-      - run: pip install --upgrade frida frida-tools
+      - run: pip install -r requirements-dev.txt
       - run: sudo sysctl kernel.yama.ptrace_scope=0
-      - run: python test/run
+      - run: pytest
 
   lint:
     name: typecheck

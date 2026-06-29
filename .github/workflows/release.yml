@@ -35,9 +35,9 @@ jobs:
 
       - name: Test before publishing
         run: |
-          pip install --upgrade frida frida-tools
+          pip install -r requirements-dev.txt
           sudo sysctl kernel.yama.ptrace_scope=0
-          python test/run
+          pytest
 
       - name: Publish to npm (with provenance)
         run: npm publish --provenance --access public

@@ -148,6 +148,112 @@ rpc.exports = {
                 assertEq(out, "Hello from hooked");
                 assertEq(seen, "hooked");
             });
+
+            // ---- v2 features ------------------------------------------------
+
+            t("implementation is cpython", () => assertEq(Python.version.implementation, "cpython"));
+
+            t("vectorcall no-arg / one-arg", () => {
+                assertEq(Python.use("builtins.list")().$len(), 0); // no-arg fast path
+                assertEq(Python.builtins.len([1, 2]).$toJS(), 2); // one-arg fast path
+            });
+
+            // richer marshalling
+            t("marshal set", () => assertJson(Python.eval("{3, 1, 2}", { toJS: true }).sort(), [1, 2, 3]));
+            t("marshal frozenset", () => assertJson(Python.eval("frozenset([2, 1])", { toJS: true }).sort(), [1, 2]));
+            t("marshal complex", () => assertJson(Python.eval("complex(1, 2)", { toJS: true }), { real: 1, imag: 2 }));
+            t("marshal bytearray", () => {
+                const buf = Python.eval('bytearray(b"ab")', { toJS: true });
+                assertJson(Array.from(new Uint8Array(buf)), [97, 98]);
+            });
+            t("buffer protocol", () => {
+                const buf = Python.eval('bytearray(b"hi")').$buffer();
+                assertJson(Array.from(new Uint8Array(buf)), [104, 105]);
+            });
+            t("slice", () => assertJson(Python.eval("[0, 1, 2, 3, 4]").$item(Python.slice(1, 3)).$toJS(), [1, 2]));
+
+            // capture
+            t("capture stdout", () => {
+                const cap = Python.capture(() => Python.exec('print("hi")'));
+                assertEq(cap.stdout, "hi\n");
+            });
+            t("capture stderr", () => {
+                const cap = Python.capture(() => Python.exec("import sys; sys.stderr.write('err')"));
+                assertEq(cap.stderr, "err");
+            });
+
+            // backtrace (inside a hook, a Python frame is on the stack)
+            t("backtrace inside hook", () => {
+                const Greeter = Python.use("app.Greeter");
+                let frames = null;
+                const h = Python.intercept(Greeter, "hello", (args, original) => {
+                    frames = Python.backtrace();
+                    return original(...args);
+                });
+                Greeter("bt").hello();
+                h.revert();
+                assert(frames !== null && frames.length >= 1 && typeof frames[0].name === "string");
+            });
+
+            // sub-interpreter enumeration
+            t("interpreters lists main", () => {
+                const is = Python.interpreters();
+                assert(is.length >= 1 && is.some(i => i.isMain));
+            });
+
+            // profiling
+            t("setProfile observes calls", () => {
+                const names = [];
+                try {
+                    Python.setProfile(e => {
+                        if (e.what === "call") names.push(e.funcName);
+                    });
+                    Python.exec("def __pf():\n    return 42\n__pf()");
+                } finally {
+                    Python.unsetProfile();
+                }
+                assert(names.indexOf("__pf") >= 0);
+            });
+
+            // tracing
+            t("setTrace observes events", () => {
+                let events = 0;
+                try {
+                    Python.setTrace(() => {
+                        events += 1;
+                    });
+                    Python.exec("def __tr():\n    x = 1\n    return x\n__tr()");
+                } finally {
+                    Python.unsetTrace();
+                }
+                assert(events > 0);
+            });
+
+            // PEP 523 frame-eval hooking (capability-gated)
+            t("frame-eval hook", () => {
+                if (!Python.canHookFrames()) return; // unavailable on this build -> pass
+                let count = 0;
+                try {
+                    Python.setFrameHook(() => {
+                        count += 1;
+                    });
+                    Python.exec("def __fe():\n    return sum(range(3))\n__fe()");
+                } finally {
+                    Python.unsetFrameHook();
+                }
+                assert(count > 0);
+            });
+
+            // refcount: retain takes an extra ref
+            t("retain increments refcount", () => {
+                const sys = Python.import("sys");
+                const obj = Python.eval("object()");
+                const before = sys.getrefcount(obj).$toJS();
+                const r = obj.$retain();
+                const after = sys.getrefcount(obj).$toJS();
+                r.$dispose();
+                assert(after > before);
+            });
         });
 
         return results;

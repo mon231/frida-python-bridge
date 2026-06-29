@@ -8,6 +8,8 @@ namespace Python {
         hex: number;
         /** Free-threaded (PEP 703, 3.13t+) build. */
         isFreeThreaded: boolean;
+        /** Detected interpreter: "cpython", "pypy", "graalpy", "jython", or "unknown". */
+        implementation: string;
         toString(): string;
     }
 
@@ -263,6 +265,52 @@ namespace Python {
         // --- exception types (data exports holding a PyObject* slot) -------
         a.PyExc_RuntimeError = dataDeref("PyExc_RuntimeError");
 
+        // --- vectorcall fast paths (version-gated) -------------------------
+        if (hasExport("PyObject_CallNoArgs")) a.PyObject_CallNoArgs = fn("PyObject_CallNoArgs", "pointer", ["pointer"]);
+        if (hasExport("PyObject_CallOneArg")) a.PyObject_CallOneArg = fn("PyObject_CallOneArg", "pointer", ["pointer", "pointer"]);
+
+        // --- buffer protocol (zero-copy bytes/bytearray/memoryview) --------
+        a.PyObject_GetBuffer = fn("PyObject_GetBuffer", "int", ["pointer", "pointer", "int"]);
+        a.PyBuffer_Release = fn("PyBuffer_Release", "void", ["pointer"]);
+
+        // --- complex / slice / extra container types -----------------------
+        a.PyComplex_RealAsDouble = fn("PyComplex_RealAsDouble", "double", ["pointer"]);
+        a.PyComplex_ImagAsDouble = fn("PyComplex_ImagAsDouble", "double", ["pointer"]);
+        a.PySlice_New = fn("PySlice_New", "pointer", ["pointer", "pointer", "pointer"]);
+        a.PyComplex_Type = dataPtr("PyComplex_Type");
+        a.PySet_Type = dataPtr("PySet_Type");
+        a.PyFrozenSet_Type = dataPtr("PyFrozenSet_Type");
+        a.PyByteArray_Type = dataPtr("PyByteArray_Type");
+
+        // --- sys stdio (capture) -------------------------------------------
+        a.PySys_GetObject = fn("PySys_GetObject", "pointer", ["pointer"]);
+        a.PySys_SetObject = fn("PySys_SetObject", "int", ["pointer", "pointer"]);
+
+        // --- thread/interpreter state --------------------------------------
+        a.PyThreadState_Get = fn("PyThreadState_Get", "pointer", []);
+        a.PyThreadState_Swap = fn("PyThreadState_Swap", "pointer", ["pointer"]);
+        if (hasExport("PyInterpreterState_Get")) a.PyInterpreterState_Get = fn("PyInterpreterState_Get", "pointer", []);
+        if (hasExport("PyThreadState_GetInterpreter")) a.PyThreadState_GetInterpreter = fn("PyThreadState_GetInterpreter", "pointer", ["pointer"]);
+        if (hasExport("PyInterpreterState_Head")) a.PyInterpreterState_Head = fn("PyInterpreterState_Head", "pointer", []);
+        if (hasExport("PyInterpreterState_Next")) a.PyInterpreterState_Next = fn("PyInterpreterState_Next", "pointer", ["pointer"]);
+        if (hasExport("PyInterpreterState_GetID")) a.PyInterpreterState_GetID = fn("PyInterpreterState_GetID", "int64", ["pointer"]);
+
+        // --- frame introspection (3.9+ accessors) --------------------------
+        a.PyEval_GetFrame = fn("PyEval_GetFrame", "pointer", []);
+        if (hasExport("PyFrame_GetBack")) a.PyFrame_GetBack = fn("PyFrame_GetBack", "pointer", ["pointer"]);
+        if (hasExport("PyFrame_GetCode")) a.PyFrame_GetCode = fn("PyFrame_GetCode", "pointer", ["pointer"]);
+        a.PyFrame_GetLineNumber = fn("PyFrame_GetLineNumber", "int", ["pointer"]);
+
+        // --- tracing / profiling -------------------------------------------
+        a.PyEval_SetProfile = fn("PyEval_SetProfile", "void", ["pointer", "pointer"]);
+        a.PyEval_SetTrace = fn("PyEval_SetTrace", "void", ["pointer", "pointer"]);
+
+        // --- PEP 523 frame-eval hooking (internal API, 3.9+) ---------------
+        if (hasExport("_PyInterpreterState_SetEvalFrameFunc"))
+            a._PyInterpreterState_SetEvalFrameFunc = fn("_PyInterpreterState_SetEvalFrameFunc", "void", ["pointer", "pointer"]);
+        if (hasExport("_PyEval_EvalFrameDefault"))
+            a._PyEval_EvalFrameDefault = fn("_PyEval_EvalFrameDefault", "pointer", ["pointer", "pointer", "int"]);
+
         return a;
     }
 
@@ -280,12 +328,22 @@ namespace Python {
         const minor = m ? parseInt(m[2], 10) : 0;
         const micro = m ? parseInt(m[3], 10) : 0;
         const isFreeThreaded = /free-threading build/.test(verStr);
+        const implementation = /PyPy/i.test(verStr)
+            ? "pypy"
+            : /GraalVM|GraalPy/i.test(verStr)
+              ? "graalpy"
+              : /Jython/i.test(verStr)
+                ? "jython"
+                : major >= 3
+                  ? "cpython"
+                  : "unknown";
         return {
             major,
             minor,
             micro,
             hex: (major << 24) | (minor << 16) | (micro << 8),
             isFreeThreaded,
+            implementation,
             toString() {
                 return `${major}.${minor}.${micro}${isFreeThreaded ? "t" : ""}`;
             },
@@ -296,5 +354,36 @@ namespace Python {
     export function getVersion(): Version {
         if (_version === undefined) _version = parseVersion();
         return _version;
+    }
+
+    /**
+     * Verify the located runtime is CPython (PyPy/Jython/GraalPy expose a different /
+     * incompatible object model). Throws otherwise. Safe to call repeatedly.
+     */
+    export function assertCPython(): void {
+        const v = getVersion();
+        if (v.implementation !== "cpython") {
+            throw new Error(
+                `frida-python-bridge: ${v.implementation} is not supported (CPython only)`
+            );
+        }
+        if (getModule().findExportByName("_Py_NoneStruct") === null && !hasExport("_Py_NoneStruct")) {
+            throw new Error("frida-python-bridge: located runtime is not CPython (no _Py_NoneStruct)");
+        }
+    }
+
+    let _warmed = false;
+
+    /**
+     * Pre-create this thread's PyThreadState once, mitigating the cpython#96071
+     * first-`PyGILState_Ensure` deadlock on a fresh Frida thread (3.11+ w/ tracemalloc).
+     */
+    export function warmUp(): void {
+        if (_warmed) return;
+        _warmed = true;
+        const api = getApi();
+        if ((api.Py_IsInitialized() as number) === 0) return;
+        const st = api.PyGILState_Ensure() as number;
+        api.PyGILState_Release(st);
     }
 }

@@ -169,20 +169,22 @@ namespace Python {
             api.PyErr_Clear();
             return new ArrayBuffer(0);
         }
-        if (type.equals(api.PyList_Type) || type.equals(api.PyTuple_Type)) {
-            const result: any[] = [];
-            const iter = api.PyObject_GetIter(handle) as NativePointer;
-            if (!iter.isNull()) {
-                let item: NativePointer = api.PyIter_Next(iter) as NativePointer;
-                while (!item.isNull()) {
-                    result.push(toJS(item));
-                    api.Py_DecRef(item);
-                    item = api.PyIter_Next(iter) as NativePointer;
-                }
-                api.Py_DecRef(iter);
-                api.PyErr_Clear();
-            }
-            return result;
+        if (
+            type.equals(api.PyList_Type) ||
+            type.equals(api.PyTuple_Type) ||
+            type.equals(api.PySet_Type) ||
+            type.equals(api.PyFrozenSet_Type)
+        ) {
+            return iterableToArray(handle);
+        }
+        if (type.equals(api.PyComplex_Type)) {
+            return {
+                real: api.PyComplex_RealAsDouble(handle) as number,
+                imag: api.PyComplex_ImagAsDouble(handle) as number,
+            };
+        }
+        if (type.equals(api.PyByteArray_Type)) {
+            return bufferOf(handle);
         }
         if (type.equals(api.PyDict_Type)) {
             const result: Record<string, any> = {};
@@ -201,6 +203,55 @@ namespace Python {
 
         // Unknown / user-defined type: return a wrapper that owns its own reference.
         return new PyObject(handle, { owned: false });
+    }
+
+    /** Iterate any Python iterable into a JS array (each item via toJS). GIL held. */
+    function iterableToArray(handle: NativePointer): any[] {
+        const api = getApi();
+        const result: any[] = [];
+        const iter = api.PyObject_GetIter(handle) as NativePointer;
+        if (!iter.isNull()) {
+            let item = api.PyIter_Next(iter) as NativePointer;
+            while (!item.isNull()) {
+                result.push(toJS(item));
+                api.Py_DecRef(item);
+                item = api.PyIter_Next(iter) as NativePointer;
+            }
+            api.Py_DecRef(iter);
+            api.PyErr_Clear();
+        }
+        return result;
+    }
+
+    /** Read a buffer-protocol object (bytes/bytearray/memoryview/...) as an ArrayBuffer. */
+    export function bufferOf(handle: NativePointer): ArrayBuffer {
+        const api = getApi();
+        const view = Memory.alloc(0x100); // Py_buffer is ~80 bytes; over-allocate
+        if ((api.PyObject_GetBuffer(handle, view, 0 /* PyBUF_SIMPLE */) as number) !== 0) {
+            api.PyErr_Clear();
+            return new ArrayBuffer(0);
+        }
+        try {
+            const buf = view.readPointer(); // Py_buffer.buf  (offset 0)
+            const len = (view.add(Process.pointerSize * 2).readS64() as Int64).toNumber(); // .len (after buf, obj)
+            return len > 0 ? buf.readByteArray(len) ?? new ArrayBuffer(0) : new ArrayBuffer(0);
+        } finally {
+            api.PyBuffer_Release(view);
+        }
+    }
+
+    /** Build a Python `slice(start, stop, step)` as a wrapped PyObject. GIL held. */
+    export function slice(start?: any, stop?: any, step?: any): PyObject {
+        const api = getApi();
+        const s = toPyHandle(start ?? null);
+        const e = toPyHandle(stop ?? null);
+        const t = toPyHandle(step ?? null);
+        const sl = api.PySlice_New(s, e, t) as NativePointer;
+        api.Py_DecRef(s);
+        api.Py_DecRef(e);
+        api.Py_DecRef(t);
+        checkError();
+        return wrap(new PyObject(sl, { owned: true }));
     }
 
     /** Internal str() helper available to marshalling (mirrors errors.display). */

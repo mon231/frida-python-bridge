@@ -57,6 +57,23 @@ namespace Python {
                 kwargs = toPyHandle((args[args.length - 1] as KwArgs).map);
                 positional = args.slice(0, -1);
             }
+            // Vectorcall fast paths (no kwargs) avoid building an args tuple.
+            if (kwargs.isNull()) {
+                if (positional.length === 0 && api.PyObject_CallNoArgs !== undefined) {
+                    const r = api.PyObject_CallNoArgs(this.handle) as NativePointer;
+                    checkError();
+                    if (r.isNull()) throw new Error("call returned null");
+                    return new PyObject(r, { owned: true });
+                }
+                if (positional.length === 1 && api.PyObject_CallOneArg !== undefined) {
+                    const a0 = toPyHandle(positional[0]);
+                    const r = api.PyObject_CallOneArg(this.handle, a0) as NativePointer;
+                    api.Py_DecRef(a0);
+                    checkError();
+                    if (r.isNull()) throw new Error("call returned null");
+                    return new PyObject(r, { owned: true });
+                }
+            }
             const tuple = tupleFromHandles(positional.map(a => toPyHandle(a)));
             const ret = api.PyObject_Call(this.handle, tuple, kwargs) as NativePointer;
             api.Py_DecRef(tuple);
@@ -146,6 +163,11 @@ namespace Python {
             return toJS(this.handle);
         }
 
+        /** Read this object's contents via the buffer protocol as an ArrayBuffer. */
+        $buffer(): ArrayBuffer {
+            return bufferOf(this.handle);
+        }
+
         /** Python `==` comparison. */
         $equals(other: PyObject | NativePointer): boolean {
             const h = other instanceof NativeStruct ? other.handle : other;
@@ -202,18 +224,35 @@ namespace Python {
         }
     }
 
-    /** Build a finalizer that decrefs `handle` under the GIL (guards finalization). */
+    // Handles whose owning wrapper has been GC'd / disposed, awaiting Py_DecRef.
+    const pendingDecrefs: NativePointer[] = [];
+
+    /**
+     * A wrapper's finalizer (fired by QuickJS GC or script unload, at an arbitrary
+     * moment) only ENQUEUES the handle. The actual Py_DecRef is deferred to a
+     * controlled point ({@link decrefAllPending}, called at perform() boundaries) so a
+     * decref/dealloc never runs in the middle of another bridge operation.
+     */
     function makeFinalizer(handle: NativePointer): () => void {
         return () => {
-            const api = getApi();
-            if ((api.Py_IsFinalizing() as number) !== 0) return; // interpreter tearing down
-            const st = api.PyGILState_Ensure();
-            try {
-                api.Py_DecRef(handle);
-            } finally {
-                api.PyGILState_Release(st);
-            }
+            pendingDecrefs.push(handle);
         };
+    }
+
+    /**
+     * Release all queued handles. MUST be called with the GIL held and the interpreter
+     * live (perform() guarantees both). No-op during interpreter finalization.
+     * @internal
+     */
+    export function decrefAllPending(): void {
+        if (pendingDecrefs.length === 0) return;
+        const api = getApi();
+        if ((api.Py_IsFinalizing() as number) !== 0) {
+            pendingDecrefs.length = 0; // interpreter tearing down; nothing to release
+            return;
+        }
+        const batch = pendingDecrefs.splice(0, pendingDecrefs.length);
+        for (const h of batch) api.Py_DecRef(h);
     }
 
     /** str()/repr() result -> JS string, releasing the temporary. */

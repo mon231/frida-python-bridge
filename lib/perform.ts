@@ -3,6 +3,7 @@ namespace Python {
     export function isLive(): boolean {
         try {
             const api = getApi();
+            if (getVersion().implementation !== "cpython") return false;
             return (api.Py_IsInitialized() as number) !== 0 && (api.Py_IsFinalizing() as number) === 0;
         } catch (_e) {
             return false;
@@ -15,14 +16,17 @@ namespace Python {
      * `Java.perform`, with `PyGILState_Ensure/Release` replacing thread-attach.
      */
     export async function perform<T>(block: () => T | Promise<T>): Promise<T> {
+        assertCPython();
         if (!isLive()) {
             throw new Error(
                 "frida-python-bridge: CPython is not available (not found / not initialized / finalizing)"
             );
         }
+        warmUp();
         const api = getApi();
         const state = api.PyGILState_Ensure() as number;
         try {
+            decrefAllPending(); // reclaim handles queued since the last perform
             const result = block();
             return result instanceof Promise ? await result : result;
         } catch (e) {
@@ -31,20 +35,25 @@ namespace Python {
             }, e);
             throw e;
         } finally {
+            decrefAllPending(); // release everything dropped during this perform
             api.PyGILState_Release(state);
         }
     }
 
     /** Synchronous variant for callers that need a value back immediately (still GIL-safe). */
     export function performNow<T>(block: () => T): T {
+        assertCPython();
         if (!isLive()) {
             throw new Error("frida-python-bridge: CPython is not available");
         }
+        warmUp();
         const api = getApi();
         const state = api.PyGILState_Ensure() as number;
         try {
+            decrefAllPending();
             return block();
         } finally {
+            decrefAllPending();
             api.PyGILState_Release(state);
         }
     }

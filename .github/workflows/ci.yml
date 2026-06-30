@@ -12,7 +12,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13"]
+        python-version: ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
         exclude:
           # macos-latest is arm64; setup-python has no 3.8/3.9 builds there.
           - os: macos-latest
@@ -20,9 +20,6 @@ jobs:
           - os: macos-latest
             python-version: "3.9"
     runs-on: ${{ matrix.os }}
-    # Frida self-injection on macOS CI is finicky (hardened runtime / library
-    # validation); keep macOS best-effort so it doesn't block the run.
-    continue-on-error: ${{ matrix.os == 'macos-latest' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -48,13 +45,35 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo sysctl kernel.yama.ptrace_scope=0
 
+      # macOS ships a hardened-runtime, library-validated Python.framework binary, which
+      # frida cannot spawn-inject into (the spawn handshake times out). Ad-hoc re-sign the
+      # interpreter with `get-task-allow` (+ relaxed codesign flags) so it is debuggable.
+      - name: Allow frida injection on macOS (re-sign target python)
+        if: runner.os == 'macOS'
+        run: |
+          cat > /tmp/fpb-ent.plist <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>com.apple.security.get-task-allow</key><true/>
+            <key>com.apple.security.cs.disable-library-validation</key><true/>
+            <key>com.apple.security.cs.allow-unsigned-executable-memory</key><true/>
+            <key>com.apple.security.cs.allow-dyld-environment-variables</key><true/>
+          </dict></plist>
+          PLIST
+          PYBIN=$(python -c "import os,sys; print(os.path.realpath(sys.executable))")
+          echo "re-signing $PYBIN"
+          codesign -s - -f --options runtime --entitlements /tmp/fpb-ent.plist "$PYBIN"
+          codesign -d --entitlements - "$PYBIN" || true
+
       - name: Run tests
         run: pytest
 
   freethreaded:
     name: ubuntu / Python 3.13t (free-threaded)
     runs-on: ubuntu-latest
-    continue-on-error: true # free-threaded support is best-effort
+    # No continue-on-error: the lane exits 0 by design when frida has no free-threaded
+    # wheel (env limitation), and fails the workflow only on a real test failure.
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -84,7 +103,8 @@ jobs:
     # (frida injects regardless of the target's version). ubuntu-22.04 still ships 3.6/3.7.
     name: target Python ${{ matrix.target }} (host 3.11)
     runs-on: ubuntu-22.04
-    continue-on-error: true # old EOL interpreters / static-build symbol export are best-effort
+    # No job-level continue-on-error: an unprovisionable EOL target (3.6) is tolerated at
+    # the step level and its test step is skipped, so the job fails only on a real failure.
     strategy:
       fail-fast: false
       matrix:
@@ -96,6 +116,7 @@ jobs:
           node-version: "20.x"
       - name: Set up TARGET Python ${{ matrix.target }}
         id: target
+        continue-on-error: true # 3.6 is EOL and no longer in the setup-python manifest
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.target }}
@@ -110,6 +131,8 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - run: sudo sysctl kernel.yama.ptrace_scope=0
       - name: Run core suite against the ${{ matrix.target }} target
+        # Skip cleanly when the EOL target could not be provisioned (no red X).
+        if: steps.target.outcome == 'success' && steps.target.outputs.python-path != ''
         env:
           FPB_TARGET_PYTHON: ${{ steps.target.outputs.python-path }}
         run: pytest test/test_bridge.py

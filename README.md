@@ -78,6 +78,7 @@ Everything hangs off the global `Python` namespace.
 | `Python.performNow(fn)` | Synchronous variant (returns `fn`'s value) |
 | `Python.$config` | `{ moduleName?, exports }` overrides for stripped/static/embedded hosts |
 | `Python.interpreters()` | Enumerate interpreters (PEP 684); `[{ id, isMain }]` |
+| `Python.performInInterpreter(id, fn)` / `...Now(id, fn)` | Run `fn` against a chosen interpreter (by id) via `PyThreadState_Swap`. `fn` must be synchronous. ⚠️ single-GIL targeting; objects must not cross interpreters |
 
 ### Code & objects
 | Member | Description |
@@ -89,6 +90,7 @@ Everything hangs off the global `Python` namespace.
 | `Python.use(dotted)` | Resolve a dotted class/callable, e.g. `Python.use("app.Greeter")` |
 | `Python.builtins` | The `builtins` module |
 | `Python.choose(predicate?)` | Enumerate live instances via `gc.get_objects()`; `predicate` is a dotted type name, a type, or `(o) => boolean` |
+| `Python.countInstances(type?)` | Fast heap-wide instance **count** (CModule; counts in C, wraps nothing). `type` is a dotted name or type; omit to count all GC-tracked objects. No JS-predicate form |
 | `Python.kw({ ... })` | Wrap keyword arguments for a call |
 | `Python.slice(start?, stop?, step?)` | Build a Python `slice` (for `$item`) |
 | `Python.intercept(target, name, handler)` | Hook `target.name`; returns `{ original, revert() }` |

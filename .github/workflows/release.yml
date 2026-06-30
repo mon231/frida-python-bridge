@@ -25,10 +25,10 @@ jobs:
 
       - uses: actions/checkout@v4
 
-      - name: Test before publishing
+      - name: Set package version from tag
         run: |
-          pip install -r requirements-dev.txt
-          sudo sysctl kernel.yama.ptrace_scope=0
+          VERSION="${GITHUB_REF_NAME#v}"
+          npm version "$VERSION" --no-git-tag-version
 
       - name: Install & build
         run: |

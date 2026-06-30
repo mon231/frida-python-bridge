@@ -137,6 +137,15 @@ namespace Python {
         return h !== null && !h.isNull();
     }
 
+    /** Raw code address of an export (for CModule symbol maps); throws if unresolved. */
+    export function symbolAddress(name: string): NativePointer {
+        const h = resolveSymbol(name);
+        if (h === null || h.isNull()) {
+            throw new Error(`frida-python-bridge: couldn't resolve export '${name}'`);
+        }
+        return h;
+    }
+
     function buildApi(): Api {
         const a: Api = {};
 
@@ -289,6 +298,11 @@ namespace Python {
         // --- thread/interpreter state --------------------------------------
         a.PyThreadState_Get = fn("PyThreadState_Get", "pointer", []);
         a.PyThreadState_Swap = fn("PyThreadState_Swap", "pointer", ["pointer"]);
+        // Sub-interpreter targeting: create/dispose a thread state bound to a chosen interp.
+        if (hasExport("PyThreadState_New")) a.PyThreadState_New = fn("PyThreadState_New", "pointer", ["pointer"]);
+        if (hasExport("PyThreadState_Clear")) a.PyThreadState_Clear = fn("PyThreadState_Clear", "void", ["pointer"]);
+        if (hasExport("PyThreadState_Delete")) a.PyThreadState_Delete = fn("PyThreadState_Delete", "void", ["pointer"]);
+        if (hasExport("PyInterpreterState_ThreadHead")) a.PyInterpreterState_ThreadHead = fn("PyInterpreterState_ThreadHead", "pointer", ["pointer"]);
         if (hasExport("PyInterpreterState_Get")) a.PyInterpreterState_Get = fn("PyInterpreterState_Get", "pointer", []);
         if (hasExport("PyThreadState_GetInterpreter")) a.PyThreadState_GetInterpreter = fn("PyThreadState_GetInterpreter", "pointer", ["pointer"]);
         if (hasExport("PyInterpreterState_Head")) a.PyInterpreterState_Head = fn("PyInterpreterState_Head", "pointer", []);

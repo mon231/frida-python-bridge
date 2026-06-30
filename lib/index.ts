@@ -12,6 +12,7 @@
 /// <reference path="./trace.ts" />
 /// <reference path="./eval-frame.ts" />
 /// <reference path="./choose.ts" />
+/// <reference path="./native.ts" />
 /// <reference path="./hook.ts" />
 
 // Install the global. Consumers do `import "frida-python-bridge";` then use `Python.*`.

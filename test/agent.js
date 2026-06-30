@@ -129,6 +129,16 @@ rpc.exports = {
                 const named = Python.choose("app.Greeter").filter(g => g.name.$toJS() === "alpha");
                 assert(named.length >= 1);
             });
+            // CModule fast counter must agree with choose().length (counts in C, wraps nothing).
+            t("countInstances matches choose", () => {
+                const viaChoose = Python.choose("app.Greeter").length;
+                const viaCount = Python.countInstances("app.Greeter");
+                assertEq(viaCount, viaChoose);
+                assert(viaCount >= 2);
+            });
+            t("countInstances no-arg counts heap", () => {
+                assert(Python.countInstances() > 0);
+            });
 
             // hooking
             t("hook override + revert", () => {
@@ -209,6 +219,25 @@ rpc.exports = {
             t("interpreters lists main", () => {
                 const is = Python.interpreters();
                 assert(is.length >= 1 && is.some(i => i.isMain));
+            });
+
+            // sub-interpreter targeting: running against the main interpreter id is a no-op
+            // swap and returns the block's value (real sub-interp creation is too unstable
+            // under Frida QuickJS to exercise in the default suite).
+            t("performInInterpreter targets main", () => {
+                const main = Python.interpreters().find(i => i.isMain);
+                assert(main !== undefined);
+                const v = Python.performInInterpreterNow(main.id, () => Python.eval("6 * 7", { toJS: true }));
+                assertEq(v, 42);
+            });
+            t("performInInterpreter rejects unknown id", () => {
+                let threw = false;
+                try {
+                    Python.performInInterpreterNow(999999, () => 1);
+                } catch (e) {
+                    threw = true;
+                }
+                assert(threw);
             });
 
             // Experimental instrumentation: per-thread tracing/profiling and PEP 523

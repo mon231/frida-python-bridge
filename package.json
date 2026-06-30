@@ -1,6 +1,6 @@
 {
   "name": "frida-python-bridge",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A Frida module to introspect and drive a live CPython interpreter at runtime (the CPython analog of frida-il2cpp-bridge / frida-java-bridge).",
   "type": "module",
   "main": "dist/index.js",

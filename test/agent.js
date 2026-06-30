@@ -28,6 +28,16 @@ rpc.exports = {
             return false;
         }
     },
+    // Diagnostic snapshot the harness logs if ready() never turns true, so a CI failure
+    // tells us *why* (runtime not located vs. not initialized) without another push cycle.
+    diag() {
+        const d = {};
+        try { d.initialized = Python.initialized; } catch (e) { d.initErr = String(e); }
+        try { d.available = Python.available; } catch (e) { d.availErr = String(e); }
+        try { d.version = Python.version.toString(); d.impl = Python.version.implementation; } catch (e) { d.verErr = String(e); }
+        try { d.moduleName = Python.module && Python.module.name; } catch (e) { d.moduleErr = String(e); }
+        return d;
+    },
     // Run only the tests with index in [lo, hi). The suite is sharded across several
     // fresh injections (see conftest) to bound per-GumJS-script cumulative state, which
     // otherwise accumulates enough to destabilize Frida's QuickJS over ~50+ operations.
@@ -330,6 +340,21 @@ rpc.exports = {
                 Python.performNow(() => retained.forEach(r => r.$dispose()));
                 const after = sys.getrefcount(target).$toJS();
                 assertEq(high - base, 50);
+                assertEq(after, base);
+            });
+
+            // disposal stress at scale: hundreds of wrappers created + dropped must drain
+            // cleanly at the perform boundary with the refcount returning to baseline.
+            t("disposal stress (300 wrappers)", () => {
+                const sys = Python.import("sys");
+                const target = Python.eval("object()");
+                const base = sys.getrefcount(target).$toJS();
+                const retained = [];
+                for (let i = 0; i < 300; i++) retained.push(target.$retain());
+                const high = sys.getrefcount(target).$toJS();
+                Python.performNow(() => retained.forEach(r => r.$dispose()));
+                const after = sys.getrefcount(target).$toJS();
+                assertEq(high - base, 300);
                 assertEq(after, base);
             });
         });

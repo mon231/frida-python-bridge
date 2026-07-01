@@ -85,6 +85,8 @@ rpc.exports = { run() {
     const d = {};
     try { d.moduleName = Python.module.name; d.mainExeName = Process.mainModule.name; }
     catch (e) { d.moduleError = String(e); }
+    try { d.hasPyIsInitialized = Python.hasExport("Py_IsInitialized"); } catch (e) { d.hasExportError = String(e); }
+    try { d.py_IsInitialized = Python.api.Py_IsInitialized(); } catch (e) { d.callError = String(e); }
     try { d.available = Python.available === true; } catch (e) { d.availError = String(e); }
     if (d.available) {
         try {

@@ -21,7 +21,7 @@ CPython build; skipped everywhere else (including plain local development).
 
 import json
 import os
-import sys
+import subprocess
 import time
 
 import pytest
@@ -48,26 +48,38 @@ def _bridge_source():
 
 
 def _inject(host_path, agent_suffix):
-    """Spawn host_path, inject bridge+agent_suffix. Returns ``(exports, teardown_fn)``."""
+    """Launch host_path, inject bridge+agent_suffix. Returns ``(exports, teardown_fn)``.
+
+    Uses subprocess.Popen + device.attach() rather than device.spawn()+resume(): the
+    export-dynamic host was observed hanging with Py_IsInitialized() stuck at 0 forever
+    under spawn+resume, while running the *same* binary standalone (no frida at all)
+    completes Py_Initialize() immediately with no error - i.e. frida's spawn-suspend-resume
+    sequence itself was the problem for this binary, not anything about the build or the
+    bridge. Attaching to an already-running process sidesteps that entirely, same fix as
+    conftest.py's _launch_target uses for macOS (frida-core#519/#524) - the two are
+    different platforms hitting the same class of spawn-gating fragility.
+    """
     import frida
 
     agent_source = _bridge_source() + agent_suffix
     env = dict(os.environ, FRIDA_FIXTURES=FIXTURES)
+    proc = subprocess.Popen([host_path], env=env)
     device = frida.get_local_device()
-    pid = device.spawn([host_path], env=env)
-    session = device.attach(pid)
+    session = device.attach(proc.pid)
     script = session.create_script(agent_source)
     script.load()
-    device.resume(pid)
     exports = getattr(script, "exports_sync", None) or script.exports
 
     def teardown():
+        # Don't unload the script first - we're about to hard-kill our own process
+        # regardless, and unload-before-kill has hung for minutes in this exact
+        # situation on macOS (see cli/main.py's finally block for the full story).
         try:
-            script.unload()
+            proc.kill()
         except Exception:
             pass
         try:
-            device.kill(pid)
+            proc.wait(timeout=5)
         except Exception:
             pass
 

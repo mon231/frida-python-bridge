@@ -202,10 +202,6 @@ jobs:
             $(/tmp/static-cpython/bin/python3.12-config --ldflags --embed) \
             -Wl,--export-dynamic \
             -o /tmp/static_host_dynamic
-          echo "--- .dynsym entries for the symbols isLive() needs ---"
-          nm -D /tmp/static_host_dynamic | grep -E "Py_GetVersion|Py_IsInitialized|Py_IsFinalizing" || echo "NONE FOUND in .dynsym"
-          echo "--- running it standalone (no frida) for 3s to see its own stdout/stderr ---"
-          FRIDA_FIXTURES="$PWD/test/fixtures" timeout 3 /tmp/static_host_dynamic; echo "exit code: $?"
 
       - name: Build + strip a plain static host (no export-dynamic)
         run: |

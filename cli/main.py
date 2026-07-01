@@ -201,11 +201,11 @@ def main(argv=None):
             "repl": cmd_repl,
         }[args.command](exports, args)
     finally:
-        try:
-            script.unload()
-        except Exception:
-            pass
         if spawned_proc is not None:
+            # We own this process and are about to hard-kill it regardless, so there's
+            # no benefit to unloading the script first - and on macOS, script.unload()
+            # has been observed to hang here for minutes (frida's teardown handshake
+            # with the target, rather than anything actually still running).
             try:
                 spawned_proc.kill()
             except Exception:
@@ -214,11 +214,16 @@ def main(argv=None):
                 spawned_proc.wait(timeout=5)
             except Exception:
                 pass
-        elif spawned_pid is not None:
+        else:
             try:
-                device.kill(spawned_pid)
+                script.unload()
             except Exception:
                 pass
+            if spawned_pid is not None:
+                try:
+                    device.kill(spawned_pid)
+                except Exception:
+                    pass
 
 
 if __name__ == "__main__":

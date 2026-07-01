@@ -169,11 +169,15 @@ def _inject_and_run(lo, hi):
         experimental = os.environ.get("FPB_EXPERIMENTAL") == "1"
         out = exports.run(lo, hi, experimental)
     finally:
-        try:
-            if script is not None:
-                script.unload()
-        except Exception:
-            pass
+        if proc is None:  # frida-spawned: unload before device.kill()
+            try:
+                if script is not None:
+                    script.unload()
+            except Exception:
+                pass
+        # else: we own this process and are about to hard-kill it regardless, so skip
+        # unload - it has been observed to hang for minutes on macOS (cli/main.py hit
+        # the same thing; see its finally block for the full rationale).
         _teardown_target(device, pid, proc)
 
     if errors:
@@ -242,11 +246,12 @@ def _setup_live_session(device, target_python, code, env, agent_source):
             raise RuntimeError("interpreter did not become available within 30s")
         return pid, proc, script, exports
     except Exception:
-        try:
-            if script is not None:
-                script.unload()
-        except Exception:
-            pass
+        if proc is None:
+            try:
+                if script is not None:
+                    script.unload()
+            except Exception:
+                pass
         _teardown_target(device, pid, proc)
         raise
 
@@ -291,9 +296,12 @@ def live_session():
     try:
         yield exports, script
     finally:
-        try:
-            script.unload()
-        except Exception:
-            pass
+        if proc is None:  # frida-spawned: unload before device.kill()
+            try:
+                script.unload()
+            except Exception:
+                pass
+        # else: about to hard-kill our own process regardless - see _inject_and_run's
+        # finally block for why we skip unload there on macOS.
         _teardown_target(device, pid, proc)
         _cleanup_frida_tmp()

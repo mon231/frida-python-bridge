@@ -111,11 +111,15 @@ rpc.exports = { run() { return Python.perform(() => ({
                 pass
             time.sleep(0.1)
     finally:
-        try:
-            if script is not None:
-                script.unload()
-        except Exception:
-            pass
+        if proc is None:  # frida-spawned: unload before device.kill()
+            try:
+                if script is not None:
+                    script.unload()
+            except Exception:
+                pass
+        # else: about to hard-kill our own process regardless - script.unload() has
+        # been observed to hang for minutes here on macOS (see cli/main.py's finally
+        # block for the full rationale).
         if proc is not None:
             try:
                 proc.kill()

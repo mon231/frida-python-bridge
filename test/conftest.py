@@ -158,14 +158,6 @@ def pytest_generate_tests(metafunc):
     """Turn each in-interpreter assertion into its own test case (id = its name)."""
     if "case" not in metafunc.fixturenames:
         return
-    # macOS frida self-injection isn't supported in CI yet (hardened Python.framework: spawn
-    # leaves the interpreter uninitialized). Skip there until a reliable path exists.
-    if sys.platform == "darwin":
-        metafunc.parametrize(
-            "case",
-            [pytest.param(None, marks=pytest.mark.skip(reason="macOS frida injection not supported yet"))],
-        )
-        return
     results = _run_suite()
     metafunc.parametrize("case", results, ids=[r["name"] for r in results])
 
@@ -178,8 +170,6 @@ def live_session():
     The session is torn down (script unloaded, process killed, Frida tmp cleaned) at
     module scope so all tests sharing this fixture reuse the same injection.
     """
-    if sys.platform == "darwin":
-        pytest.skip("macOS frida injection not supported yet")
     try:
         import frida  # noqa: F401
     except ImportError as exc:

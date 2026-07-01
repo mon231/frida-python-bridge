@@ -37,6 +37,26 @@ jobs:
 
       - uses: actions/checkout@v4
 
+      # Headless CI has no window server to show the "allow debugging" prompt that
+      # task_for_pid() normally triggers, so the request just hangs/denies. This grants
+      # the taskport right without an interactive prompt (frida's own troubleshooting
+      # docs recommend this for exactly this SSH/CI scenario). Narrower than disabling SIP.
+      - name: Allow frida task-port access (macOS headless CI)
+        if: runner.os == 'macOS'
+        run: sudo security authorizationdb write system.privilege.taskport allow
+
+      # macOS ships a hardened-runtime, library-validated Python.framework binary, which
+      # blocks frida's injected agent from mapping executable pages / loading unsigned code.
+      # Ad-hoc re-sign the interpreter with `get-task-allow` (+ relaxed codesign flags) so
+      # it accepts injection.
+      - name: Allow frida injection on macOS (re-sign target python)
+        if: runner.os == 'macOS'
+        run: |
+          PYBIN=$(python -c "import os,sys; print(os.path.realpath(sys.executable))")
+          echo "re-signing $PYBIN"
+          codesign -s - -f --options runtime --entitlements test/host/entitlements.plist "$PYBIN"
+          codesign -d --entitlements - "$PYBIN" || true
+
       - name: Install Python test deps (frida + pytest)
         run: pip install -r requirements-dev.txt
 

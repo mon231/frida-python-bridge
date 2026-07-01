@@ -5,15 +5,18 @@ a PyInstaller ``--onefile`` bundle rather than a plain ``python.exe``.  The brid
 discover the embedded CPython runtime (``python*.dll`` / ``libpythonX.Y.so``) that
 PyInstaller loads into the process.
 
-PyInstaller's ``--onefile`` mode on Windows and macOS spawns a *child* process that runs
-the actual Python code (the parent is just a bootloader that extracts and re-launches).
-On Linux, the parent process runs Python directly.  We track the child on platforms that
-need it and attach Frida to the correct process.
+PyInstaller's ``--onefile`` mode re-execs from the extracted temp dir on every platform, so
+the original process is usually just a bootloader and the real Python code runs in a child
+(some distro/version combos keep it single-process instead).  We poll for that child with
+psutil and attach Frida to whichever process is actually running Python.
 
 Skips automatically when:
 - ``PyInstaller`` is not installed (``pip install pyinstaller``)
-- The platform is macOS (Frida injection not supported in CI yet)
 - ``dist/index.js`` has not been built (``npm run build``)
+
+On macOS the built bundle is ad-hoc re-signed with the ``get-task-allow`` entitlement (see
+``test/host/entitlements.plist``) so Frida can inject into it, mirroring the interpreter
+re-sign done for the rest of the suite in ci.yml.
 """
 
 import glob as _glob
@@ -131,9 +134,6 @@ def _find_python_pid(parent_proc, exe_name, timeout=30.0):
 @pytest.fixture(scope="module")
 def pyinstaller_exe(tmp_path_factory):
     """Build a PyInstaller ``--onefile`` bundle; yield the path to the executable."""
-    if sys.platform == "darwin":
-        pytest.skip("macOS frida injection not supported yet")
-
     try:
         import PyInstaller  # noqa: F401
     except ImportError:
@@ -173,6 +173,10 @@ def pyinstaller_exe(tmp_path_factory):
     if not os.path.exists(exe):
         pytest.skip("PyInstaller output not found at %s" % exe)
 
+    if sys.platform == "darwin":
+        ent = os.path.join(HERE, "host", "entitlements.plist")
+        subprocess.check_call(["codesign", "-s", "-", "-f", "--options", "runtime", "--entitlements", ent, exe])
+
     return exe
 
 
@@ -181,11 +185,17 @@ def pyinstaller_exe(tmp_path_factory):
     reason="Frida injection into PyInstaller bundles can crash (glibc/stack conflict) on Linux; tracked for future fix",
     strict=False,
 )
+@pytest.mark.xfail(
+    sys.platform == "darwin",
+    reason="PyInstaller-bundle child-process discovery + re-signing on macOS is untested in CI; tracked for future fix",
+    strict=False,
+)
 def test_pyinstaller_discovery(pyinstaller_exe):
     """Bridge discovers and drives the CPython runtime embedded in a PyInstaller bundle.
 
-    On Windows/macOS, PyInstaller --onefile spawns a child process for Python; we locate
-    and attach to that child.  On Linux we attach to the parent (which runs Python directly).
+    PyInstaller --onefile usually spawns a child process that runs Python; we locate and
+    attach to that child (see ``_find_python_pid``), falling back to the parent if none
+    appears.
     """
     import frida
 
@@ -202,8 +212,6 @@ def test_pyinstaller_discovery(pyinstaller_exe):
     res = None
     attach_pid = None
     try:
-        # On Windows PyInstaller --onefile creates a child process for the Python runtime.
-        # Poll psutil for the child; on Linux the parent IS the Python process.
         attach_pid = _find_python_pid(parent_proc, exe_name, timeout=60.0)
 
         device = frida.get_local_device()

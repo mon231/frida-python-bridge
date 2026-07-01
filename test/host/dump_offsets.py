@@ -16,9 +16,13 @@ import re
 import subprocess
 import sys
 
-# The minimum set Python.available (isLive()) touches: Py_GetVersion (module discovery
-# sentinel + version string), Py_IsInitialized, Py_IsFinalizing.
-SYMBOLS = ["Py_GetVersion", "Py_IsInitialized", "Py_IsFinalizing"]
+# The minimum set Python.available (isLive()) needs a real override for: Py_GetVersion
+# (module discovery sentinel + version string) and Py_IsInitialized. Py_IsFinalizing is
+# deliberately excluded - module.ts's buildApi() already treats it as optional
+# (hasExport("Py_IsFinalizing") ? fn(...) : () => 0), because it isn't reliably an
+# exported symbol across CPython versions/configs; this build confirms that (nm doesn't
+# find it here), and the bridge's own fallback makes an override unnecessary.
+SYMBOLS = ["Py_GetVersion", "Py_IsInitialized"]
 
 
 def _first_load_vaddr(binary):

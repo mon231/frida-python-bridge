@@ -18,3 +18,6 @@ venv/
 example/dist/
 example/node_modules/
 example/agent.js
+
+# local-only roadmap notes, never committed
+PLAN.md

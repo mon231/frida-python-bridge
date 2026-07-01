@@ -88,17 +88,15 @@ def _inject(host_path, agent_suffix):
 
 def test_static_export_dynamic_host_discovers_automatically():
     """Py_GetVersion lives in the main exe; locate() must find it there with no $config."""
-    # Deliberately doesn't go through Python.available for the diagnostic fields: isLive()
-    # swallows its own exceptions internally, so a getModule() failure would otherwise be
+    # Deliberately doesn't go through Python.available for moduleName: isLive() swallows
+    # its own exceptions internally, so a getModule() failure would otherwise be
     # indistinguishable from "not initialized yet" - call Python.module directly so a
-    # discovery failure surfaces as a real, inspectable error.
+    # discovery failure surfaces as a real, inspectable error instead of a bare false.
     agent = r"""
 rpc.exports = { run() {
     const d = {};
     try { d.moduleName = Python.module.name; d.mainExeName = Process.mainModule.name; }
     catch (e) { d.moduleError = String(e); }
-    try { d.hasPyIsInitialized = Python.hasExport("Py_IsInitialized"); } catch (e) { d.hasExportError = String(e); }
-    try { d.py_IsInitialized = Python.api.Py_IsInitialized(); } catch (e) { d.callError = String(e); }
     try { d.available = Python.available === true; } catch (e) { d.availError = String(e); }
     if (d.available) {
         try {

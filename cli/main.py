@@ -18,6 +18,7 @@ Requires the `frida` Python package (pip install frida).
 import argparse
 import os
 import shlex
+import subprocess
 import sys
 import time
 
@@ -79,13 +80,22 @@ def attach(args):
 
     device = frida.get_local_device()
     spawned_pid = None
+    frida_spawned = False
     if args.spawn:
         # Prefer explicit --arg tokens (no shell quoting); else shlex-split the program string.
         if args.arg:
             argv = [args.spawn, *args.arg]
         else:
             argv = shlex.split(args.spawn, posix=(os.name != "nt"))
-        spawned_pid = device.spawn(argv, env=dict(os.environ))
+        if sys.platform == "darwin":
+            # frida's spawn-then-attach-while-suspended path has public crash reports during
+            # the target's own dyld/CoreFoundation bootstrap on recent macOS (frida/frida-core
+            # #519, #524). Launch normally and attach once it's already running instead of
+            # spawn-gating + resume.
+            spawned_pid = subprocess.Popen(argv, env=dict(os.environ)).pid
+        else:
+            spawned_pid = device.spawn(argv, env=dict(os.environ))
+            frida_spawned = True
         session = device.attach(spawned_pid)
     elif args.pid is not None:
         session = device.attach(args.pid)
@@ -98,7 +108,7 @@ def attach(args):
     script.on("message", (lambda m, d: sys.stderr.write("[agent] %s\n" % (m.get("stack") or m.get("description")))
               if m["type"] == "error" else None))
     script.load()
-    if spawned_pid is not None:
+    if frida_spawned:
         device.resume(spawned_pid)
 
     exports = getattr(script, "exports_sync", None) or script.exports

@@ -208,6 +208,43 @@ def pytest_generate_tests(metafunc):
     metafunc.parametrize("case", results, ids=[r["name"] for r in results])
 
 
+def _setup_live_session(device, target_python, code, env, agent_source):
+    """One attempt at launching + attaching + waiting for readiness.
+
+    Returns ``(pid, proc, script, exports)`` on success. On any failure, tears down
+    whatever got created and re-raises, so the caller can retry cleanly.
+    """
+    pid, proc = _launch_target(device, target_python, code, env)
+    script = None
+    try:
+        session = device.attach(pid)
+        script = session.create_script(agent_source)
+        script.load()
+        if proc is None:
+            device.resume(pid)
+        exports = getattr(script, "exports_sync", None) or script.exports
+        ready = False
+        for _ in range(300):  # up to ~30s
+            try:
+                if exports.ready():
+                    ready = True
+                    break
+            except Exception:
+                pass
+            time.sleep(0.1)
+        if not ready:
+            raise RuntimeError("interpreter did not become available within 30s")
+        return pid, proc, script, exports
+    except Exception:
+        try:
+            if script is not None:
+                script.unload()
+        except Exception:
+            pass
+        _teardown_target(device, pid, proc)
+        raise
+
+
 @pytest.fixture(scope="module")
 def live_session():
     """A persistent live Frida session (exports, script) for non-parametrised tests.
@@ -229,27 +266,27 @@ def live_session():
     import frida
 
     device = frida.get_local_device()
-    pid, proc = _launch_target(device, target_python, code, env)
-    script = None
+    # Injection is occasionally flaky (see _run_suite's retry loop for the same reason);
+    # this fixture previously had no retry at all, so any transient failure here (e.g. an
+    # attach racing the target process's own startup) failed the whole module outright.
+    last_err = None
+    result = None
+    for _attempt in range(3):
+        try:
+            result = _setup_live_session(device, target_python, code, env, agent_source)
+            break
+        except Exception as exc:
+            last_err = exc
+            time.sleep(1.0)
+    if result is None:
+        raise last_err
+    pid, proc, script, exports = result
+
     try:
-        session = device.attach(pid)
-        script = session.create_script(agent_source)
-        script.load()
-        if proc is None:
-            device.resume(pid)
-        exports = getattr(script, "exports_sync", None) or script.exports
-        for _ in range(300):
-            try:
-                if exports.ready():
-                    break
-            except Exception:
-                pass
-            time.sleep(0.1)
         yield exports, script
     finally:
         try:
-            if script is not None:
-                script.unload()
+            script.unload()
         except Exception:
             pass
         _teardown_target(device, pid, proc)

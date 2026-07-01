@@ -180,13 +180,18 @@ jobs:
 
       # Fixed, known-good CPython 3.12 patch release (any 3.12.x works for this - we only
       # need a --disable-shared build to put Py_GetVersion in the main executable instead
-      # of a separate libpython.so).
+      # of a separate libpython.so). CPython's default build passes -fvisibility=hidden on
+      # every compile; PyAPI_FUNC is meant to override that per-symbol, but relying on that
+      # working correctly for a --disable-shared build is exactly the thing under test here
+      # - force the file-level default to "default" visibility too, so -Wl,--export-dynamic
+      # at link time has an unambiguous, guaranteed-visible symbol set to promote into
+      # .dynsym instead of depending on that macro's behavior in this configuration.
       - name: Build a statically-linked CPython 3.12
         run: |
           curl -fsSL -o /tmp/cpython.tgz https://www.python.org/ftp/python/3.12.8/Python-3.12.8.tgz
           tar xzf /tmp/cpython.tgz -C /tmp
           cd /tmp/Python-3.12.8
-          ./configure --prefix=/tmp/static-cpython --disable-shared --without-ensurepip
+          ./configure --prefix=/tmp/static-cpython --disable-shared --without-ensurepip CFLAGS=-fvisibility=default
           make -j"$(nproc)"
           make install
 
@@ -197,6 +202,8 @@ jobs:
             $(/tmp/static-cpython/bin/python3.12-config --ldflags --embed) \
             -Wl,--export-dynamic \
             -o /tmp/static_host_dynamic
+          echo "--- Py_GetVersion in the dynamic symbol table? ---"
+          nm -D /tmp/static_host_dynamic | grep Py_GetVersion || echo "NOT FOUND in .dynsym"
 
       - name: Build + strip a plain static host (no export-dynamic)
         run: |

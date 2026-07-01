@@ -185,11 +185,6 @@ def pyinstaller_exe(tmp_path_factory):
     reason="Frida injection into PyInstaller bundles can crash (glibc/stack conflict) on Linux; tracked for future fix",
     strict=False,
 )
-@pytest.mark.xfail(
-    sys.platform == "darwin",
-    reason="PyInstaller-bundle child-process discovery + re-signing on macOS is untested in CI; tracked for future fix",
-    strict=False,
-)
 def test_pyinstaller_discovery(pyinstaller_exe):
     """Bridge discovers and drives the CPython runtime embedded in a PyInstaller bundle.
 

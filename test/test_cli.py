@@ -23,7 +23,11 @@ def _run(*cli_args):
         "-f", sys.executable, "--arg=-c", "--arg=import app; app.main()",
         *cli_args,
     ]
-    return subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=60)
+    # macOS's injection/attach pipeline (re-signed target, taskport authorization) runs
+    # noticeably slower than Linux/Windows and has been observed right at a 60s budget
+    # with correct output already produced - give it more headroom there.
+    timeout = 120 if sys.platform == "darwin" else 60
+    return subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=timeout)
 
 
 def test_cli_info():

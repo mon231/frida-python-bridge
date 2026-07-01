@@ -76,19 +76,23 @@ def _inject(host_path, agent_suffix):
 
 def test_static_export_dynamic_host_discovers_automatically():
     """Py_GetVersion lives in the main exe; locate() must find it there with no $config."""
+    # Deliberately doesn't go through Python.available for the diagnostic fields: isLive()
+    # swallows its own exceptions internally, so a getModule() failure would otherwise be
+    # indistinguishable from "not initialized yet" - call Python.module directly so a
+    # discovery failure surfaces as a real, inspectable error.
     agent = r"""
 rpc.exports = { run() {
-    try {
-        if (!Python.available) return { available: false };
-        return {
-            available: true,
-            impl: Python.version.implementation,
-            moduleIsMainExe: Python.module.name === Process.mainModule.name,
-            evalOk: Python.eval("1 + 2", { toJS: true }) === 3,
-        };
-    } catch (e) {
-        return { available: false, error: String(e) };
+    const d = {};
+    try { d.moduleName = Python.module.name; d.mainExeName = Process.mainModule.name; }
+    catch (e) { d.moduleError = String(e); }
+    try { d.available = Python.available === true; } catch (e) { d.availError = String(e); }
+    if (d.available) {
+        try {
+            d.impl = Python.version.implementation;
+            d.evalOk = Python.eval("1 + 2", { toJS: true }) === 3;
+        } catch (e) { d.evalError = String(e); }
     }
+    return d;
 } };
 """
     exports, teardown = _inject(DYNAMIC_HOST, agent)
@@ -104,7 +108,7 @@ rpc.exports = { run() {
             time.sleep(0.1)
         assert res is not None and res.get("available"), "never became available: %r" % (res,)
         assert res["impl"] == "cpython"
-        assert res["moduleIsMainExe"] is True, "Py_GetVersion should resolve to the main executable itself"
+        assert res["moduleName"] == res["mainExeName"], "Py_GetVersion should resolve to the main executable itself"
         assert res["evalOk"] is True
     finally:
         teardown()

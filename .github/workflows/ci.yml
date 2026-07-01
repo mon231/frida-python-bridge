@@ -156,6 +156,66 @@ jobs:
           FPB_TARGET_PYTHON: ${{ steps.target.outputs.python-path }}
         run: pytest test/test_bridge.py
 
+  static-host:
+    name: static/stripped host (Linux x86_64, Python 3.12)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20.x"
+
+      - name: Set up Python (runs frida + pytest)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: sudo sysctl kernel.yama.ptrace_scope=0
+
+      - uses: actions/checkout@v4
+
+      - run: pip install -r requirements-dev.txt
+      - run: |
+          npm ci
+          npm run build
+
+      # Fixed, known-good CPython 3.12 patch release (any 3.12.x works for this - we only
+      # need a --disable-shared build to put Py_GetVersion in the main executable instead
+      # of a separate libpython.so).
+      - name: Build a statically-linked CPython 3.12
+        run: |
+          curl -fsSL -o /tmp/cpython.tgz https://www.python.org/ftp/python/3.12.8/Python-3.12.8.tgz
+          tar xzf /tmp/cpython.tgz -C /tmp
+          cd /tmp/Python-3.12.8
+          ./configure --prefix=/tmp/static-cpython --disable-shared --without-ensurepip
+          make -j"$(nproc)"
+          make install
+
+      - name: Build the export-dynamic static host
+        run: |
+          cc test/host/embed.c \
+            $(/tmp/static-cpython/bin/python3.12-config --cflags --embed) \
+            $(/tmp/static-cpython/bin/python3.12-config --ldflags --embed) \
+            -Wl,--export-dynamic \
+            -o /tmp/static_host_dynamic
+
+      - name: Build + strip a plain static host (no export-dynamic)
+        run: |
+          cc test/host/embed.c \
+            $(/tmp/static-cpython/bin/python3.12-config --cflags --embed) \
+            $(/tmp/static-cpython/bin/python3.12-config --ldflags --embed) \
+            -o /tmp/static_host_stripped
+          # Capture file offsets for the symbols the $config escape-hatch test needs
+          # *before* stripping removes their names.
+          python3 test/host/dump_offsets.py /tmp/static_host_stripped > /tmp/static_host_stripped.offsets.json
+          strip --strip-all /tmp/static_host_stripped
+
+      - name: Run static/stripped host tests
+        env:
+          FPB_STATIC_HOST_DYNAMIC: /tmp/static_host_dynamic
+          FPB_STATIC_HOST_STRIPPED: /tmp/static_host_stripped
+          FPB_STATIC_HOST_STRIPPED_OFFSETS: /tmp/static_host_stripped.offsets.json
+        run: pytest test/test_static_host.py -v
+
   lint:
     name: typecheck
     runs-on: ubuntu-latest

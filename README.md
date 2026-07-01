@@ -207,11 +207,34 @@ introspection, `choose`, and hooking — each surfaced as its own test case. It 
 **Windows, Linux and macOS**; on Linux self-injection needs `sudo sysctl kernel.yama.ptrace_scope=0`.
 [`test/manual.py`](./test/manual.py) is a lighter human-readable demo.
 
+## Tests
+
+Every assertion inside a live interpreter ([`test/agent.js`](./test/agent.js)) is surfaced as its
+own `pytest` case (`test_case[<name>]`), so `pytest -v` or `-k` targets a single behavior directly.
+The table below is at the level of test *files* — what each one is actually checking, and which
+{OS × Python} combinations run it in CI ([`.github/workflows/ci.yml`](./.github/workflows/ci.yml)).
+"Runs" means the assertions execute for real and must pass; `xfail` means the test executes but a
+known, tracked failure is tolerated (a pass is fine too — `strict=False` — but a red is not).
+
+| Test file | What it covers | Ubuntu | macOS | Windows |
+|---|---|---|---|---|
+| [`test_bridge.py`](./test/test_bridge.py) — parametrized cases | Core API: discovery, `eval`/`exec`/`import`/`use`/`builtins`, the `PyObject` proxy (attrs, calls, vectorcall, iteration, subscript/slice, repr/dir/len/equals/hash), marshalling (int/float/bool/str/bytes/bytearray/None/list/tuple/set/frozenset/dict/complex/datetime/date/Decimal/bigint), `choose`/`countInstances`, hooking (`intercept`), `PythonException`, buffer protocol, stdout/stderr capture, backtrace, sub-interpreters (`interpreters`/`performInInterpreter`), retain/dispose + no-leak guarantee, free-threaded-safety markers (`isFreeThreaded`, exported-symbol-only refcounting, 3.9+ frame accessors) | 3.8–3.14 | 3.10–3.14 | 3.8–3.14 |
+| `test_bridge.py` — `test_perform_from_setTimeout_thread`, `test_perform_from_recv_thread` | `Python.perform`/`performNow` GIL-attach safety from the `setTimeout` and `recv` GumJS thread contexts (`rpc` coverage is implicit in every case above) — see [Execution thread safety](#execution-thread-safety) | 3.8–3.14 | 3.10–3.14 | 3.8–3.14 |
+| [`test_cli.py`](./test/test_cli.py) | The `cli/main.py` CLI: `-f` spawn + `info`/`dump`/`eval` | 3.8–3.14 | *skipped* — `-f` spawn hangs on process exit; tracked | 3.8–3.14 |
+| [`test_embedded.py`](./test/test_embedded.py) | Discovery when the host executable is *not* `python(.exe)` — a small C program dynamically embedding `libpythonX.Y` | 3.8–3.14 | 3.10–3.14 | *skipped* — needs `cc`/`python3-config`, Linux/macOS only |
+| [`test_pyinstaller.py`](./test/test_pyinstaller.py) | Discovery inside a PyInstaller `--onefile` bundle, incl. locating the real Python process when the bootloader re-execs into a child | 3.8–3.14 (`xfail`: known glibc/stack crash) | 3.10–3.14 | 3.8–3.14 |
+| [`test_static_host.py`](./test/test_static_host.py) | A **statically-linked** interpreter (`-Wl,--export-dynamic`: `Py_GetVersion` lives in the main executable, not a separate module) and a **fully stripped** static binary (no exported or symbol-table name survives at all) — proves auto-discovery works for the first and fails cleanly for the second, and that the `Python.$config.moduleName`/`$config.exports` escape hatch recovers it | 3.12 only, dedicated `static-host` job (needs a from-source `--disable-shared` CPython build) | — | — |
+| `test_bridge.py` (subset) via `legacy-targets` job | Same core suite, injected into an **EOL** target interpreter from a modern frida host (frida itself no longer installs on 3.6/3.7) | 3.6, 3.7 (target; host 3.11) | — | — |
+| Whole suite via `freethreaded` job | Free-threaded (PEP 703) build safety | 3.13t — currently always a no-op: frida has no free-threaded wheel yet, so the job installs, sees `import frida` fail, and skips with a notice instead of going red | — | — |
+| Trace/profile/frame-eval cases in `agent.js` (`setProfile`/`setTrace`/`setFrameHook`) | Per-thread tracing/profiling, PEP 523 frame-eval hooking | **not run in any default CI job** — gated behind `FPB_EXPERIMENTAL=1` (opt-in locally); see [PLAN.md](./PLAN.md) for why | | |
+| `typecheck` job | `npx tsc --noEmit` — not a pytest test | ubuntu-only | — | — |
+
 ## CI / publishing
 
 - [`.github/workflows/ci.yml`](./.github/workflows/ci.yml) — matrix of {Ubuntu, macOS, Windows} ×
-  Python {3.8 … 3.13}, a `legacy-targets` job that injects into 3.6/3.7 interpreters from a
-  modern frida host, a free-threaded `3.13t` lane, and a typecheck job.
+  Python {3.8 … 3.14}, a `legacy-targets` job that injects into 3.6/3.7 interpreters from a
+  modern frida host, a free-threaded `3.13t` lane, a `static-host` job (Linux/3.12 only — see
+  [Tests](#tests)), and a typecheck job.
 - [`.github/workflows/release.yml`](./.github/workflows/release.yml) — on a `v*` tag: build, test,
   then `npm publish --provenance`. Requires an `NPM_TOKEN` repo secret (npm *Automation* token).
   Release with `npm version <patch|minor|major>` then `git push --follow-tags`.
@@ -243,6 +266,14 @@ recv("trigger", (_msg) => Python.perform(() => { Python.exec("do_something()"); 
 
 CPython documents `PyGILState_Ensure` for exactly this use-case:
 <https://docs.python.org/3/c-api/init.html#c.PyGILState_Ensure>.
+
+Confirmed directly against frida-gum's own API surface (`@types/frida-gum`), not just assumed:
+`setTimeout`/`setImmediate` are documented as running "on **Frida's JavaScript thread**" (singular,
+definite article) — the same thread `rpc.exports` handlers and `recv` callbacks run on, since a
+GumJS script instance has exactly one JavaScript thread/event loop, not one per callback kind.
+`test_perform_from_setTimeout_thread` / `test_perform_from_recv_thread`
+([`test/test_bridge.py`](./test/test_bridge.py)) exercise all three contexts explicitly against a
+live interpreter rather than relying on this by inference alone.
 
 The only constraint is not holding the GIL across an `await` inside the `perform` async form when
 other Python threads need to run; use `performNow` (synchronous, GIL held for the entire block) or

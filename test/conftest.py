@@ -76,8 +76,19 @@ def _inject_and_run(lo, hi):
 
     script = None
     errors = []
+    detach_info = []
     try:
         session = device.attach(pid)
+        # If the target dies outright (segfault/abort), every later RPC call just raises
+        # "script has been destroyed" with no clue why. `detached` fires with the *reason*
+        # and, when the process actually crashed, a CrashInfo (report/summary) - capture it
+        # so a CI failure says *why* the process died instead of just "it went quiet".
+        session.on(
+            "detached",
+            lambda reason, crash=None: detach_info.append(
+                {"reason": str(reason), "crash": getattr(crash, "report", None) or str(crash) if crash else None}
+            ),
+        )
         script = session.create_script(agent_source)
         script.on(
             "message",
@@ -107,7 +118,8 @@ def _inject_and_run(lo, hi):
             except Exception as exc:  # noqa: BLE001
                 diag = {"diagError": str(exc)}
             raise RuntimeError(
-                "interpreter did not become available within 30s; diag=%r" % (diag,)
+                "interpreter did not become available within 30s; diag=%r; detach=%r"
+                % (diag, detach_info)
             )
         time.sleep(0.3)
 

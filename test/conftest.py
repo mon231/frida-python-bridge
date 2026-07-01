@@ -12,6 +12,7 @@ Linux, self-injection needs ``sysctl kernel.yama.ptrace_scope=0``.
 import glob as _glob
 import os
 import shutil
+import subprocess
 import sys
 import time
 
@@ -23,6 +24,41 @@ FIXTURES = os.path.join(HERE, "fixtures")
 
 # Cache the (expensive) injection so the suite runs a single time per session.
 _cache = {}
+
+
+def _launch_target(device, target_python, code, env):
+    """Start the quiet target host. Returns ``(pid, proc)``; ``proc`` is the
+    ``subprocess.Popen`` handle on macOS, ``None`` elsewhere (frida-spawned).
+
+    macOS: frida's spawn-then-attach-while-suspended path has repeated public crash
+    reports during the target's *own* dyld/CoreFoundation bootstrap (frida-core#519:
+    EXC_BAD_ACCESS in __CFInitialize; frida-core#524: EXC_GUARD/task_for_pid) - i.e.
+    the crash is in frida injecting into a process that hasn't finished starting yet,
+    not in anything this bridge does. Sidestep it by launching normally and attaching
+    only once the process is already alive and idling in its own event loop, instead of
+    frida spawn-gating + resume.
+    """
+    if sys.platform == "darwin":
+        proc = subprocess.Popen([target_python, "-c", code], env=env)
+        return proc.pid, proc
+    return device.spawn([target_python, "-c", code], env=env), None
+
+
+def _teardown_target(device, pid, proc):
+    if proc is not None:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            pass
+    else:
+        try:
+            device.kill(pid)
+        except Exception:
+            pass
 
 
 def _cleanup_frida_tmp():
@@ -72,7 +108,7 @@ def _inject_and_run(lo, hi):
     target_python = os.environ.get("FPB_TARGET_PYTHON") or sys.executable
 
     device = frida.get_local_device()
-    pid = device.spawn([target_python, "-c", code], env=env)
+    pid, proc = _launch_target(device, target_python, code, env)
 
     script = None
     errors = []
@@ -97,7 +133,8 @@ def _inject_and_run(lo, hi):
             else None,
         )
         script.load()
-        device.resume(pid)
+        if proc is None:  # frida-spawned (suspended); a plain Popen target is already running
+            device.resume(pid)
 
         exports = getattr(script, "exports_sync", None) or script.exports
 
@@ -131,10 +168,7 @@ def _inject_and_run(lo, hi):
                 script.unload()
         except Exception:
             pass
-        try:
-            device.kill(pid)
-        except Exception:
-            pass
+        _teardown_target(device, pid, proc)
 
     if errors:
         raise RuntimeError("frida agent reported errors: " + "; ".join(str(e) for e in errors))
@@ -195,13 +229,14 @@ def live_session():
     import frida
 
     device = frida.get_local_device()
-    pid = device.spawn([target_python, "-c", code], env=env)
+    pid, proc = _launch_target(device, target_python, code, env)
     script = None
     try:
         session = device.attach(pid)
         script = session.create_script(agent_source)
         script.load()
-        device.resume(pid)
+        if proc is None:
+            device.resume(pid)
         exports = getattr(script, "exports_sync", None) or script.exports
         for _ in range(300):
             try:
@@ -217,8 +252,5 @@ def live_session():
                 script.unload()
         except Exception:
             pass
-        try:
-            device.kill(pid)
-        except Exception:
-            pass
+        _teardown_target(device, pid, proc)
         _cleanup_frida_tmp()

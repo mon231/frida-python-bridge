@@ -80,14 +80,24 @@ rpc.exports = { run() { return Python.perform(() => ({
 
     device = frida.get_local_device()
     env = dict(os.environ, FRIDA_FIXTURES=FIXTURES)
-    pid = device.spawn([embed_host], env=env)
+
+    # macOS: attach to an already-running process instead of frida spawn+resume - the
+    # latter has public crash reports during the target's own early bootstrap on recent
+    # macOS (frida-core#519/#524). See conftest._launch_target for the full rationale.
+    proc = None
+    if sys.platform == "darwin":
+        proc = subprocess.Popen([embed_host], env=env)
+        pid = proc.pid
+    else:
+        pid = device.spawn([embed_host], env=env)
 
     script = None
     try:
         session = device.attach(pid)
         script = session.create_script(agent_source)
         script.load()
-        device.resume(pid)
+        if proc is None:
+            device.resume(pid)
         exports = getattr(script, "exports_sync", None) or script.exports
         # Poll run() until the embedded interpreter is initialized.
         res = None
@@ -105,10 +115,20 @@ rpc.exports = { run() { return Python.perform(() => ({
                 script.unload()
         except Exception:
             pass
-        try:
-            device.kill(pid)
-        except Exception:
-            pass
+        if proc is not None:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                pass
+        else:
+            try:
+                device.kill(pid)
+            except Exception:
+                pass
 
     assert res is not None, "embedded interpreter did not become available within 30s"
     assert res["available"] is True

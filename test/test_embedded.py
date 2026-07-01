@@ -47,6 +47,8 @@ def _config_flags():
 def embed_host(tmp_path_factory):
     if sys.platform == "win32":
         pytest.skip("embedded-host test is Linux/macOS only")
+    if sys.platform == "darwin":
+        pytest.skip("macOS frida injection not supported in CI yet")
     cc = os.environ.get("CC") or shutil.which("cc") or shutil.which("gcc") or shutil.which("clang")
     if cc is None:
         pytest.skip("no C compiler available")

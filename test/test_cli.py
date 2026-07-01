@@ -13,6 +13,8 @@ CLI = os.path.join(ROOT, "cli", "main.py")
 
 
 def _run(*cli_args):
+    if sys.platform == "darwin":
+        pytest.skip("macOS frida injection not supported in CI yet")
     if not os.path.exists(os.path.join(ROOT, "dist", "index.js")):
         pytest.skip("dist/index.js not found - run `npm run build` first")
 

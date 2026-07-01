@@ -68,6 +68,24 @@ jobs:
       - name: Run tests
         run: pytest
 
+      # frida's own "detached" event doesn't always carry a CrashInfo (seen: reason
+      # process-terminated, crash=None) even when the target genuinely segfaulted. macOS
+      # writes a system crash report independently of frida, so dump any produced during
+      # this run to see the actual faulting thread/exception type.
+      - name: Dump macOS crash reports (on failure)
+        if: failure() && runner.os == 'macOS'
+        run: |
+          shopt -s nullglob nocaseglob
+          reports=(~/Library/Logs/DiagnosticReports/*python* /Library/Logs/DiagnosticReports/*python*)
+          if [ ${#reports[@]} -eq 0 ]; then
+            echo "::notice::no macOS crash reports found for python*"
+          fi
+          for f in "${reports[@]}"; do
+            echo "::group::$f"
+            cat "$f"
+            echo "::endgroup::"
+          done
+
   freethreaded:
     name: ubuntu / Python 3.13t (free-threaded)
     runs-on: ubuntu-latest

@@ -40,6 +40,12 @@ def _launch_target(device, target_python, code, env):
     """
     if sys.platform == "darwin":
         proc = subprocess.Popen([target_python, "-c", code], env=env)
+        # Give dyld a moment to finish the process's own early bootstrap before frida
+        # attaches - attaching immediately has intermittently raised
+        # frida.NotSupportedError("unable to read from process memory"), consistent
+        # with the same early-startup fragility as #519/#524 above, just probabilistic
+        # under load rather than deterministic.
+        time.sleep(0.3)
         return proc.pid, proc
     return device.spawn([target_python, "-c", code], env=env), None
 

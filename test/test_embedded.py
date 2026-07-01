@@ -87,6 +87,7 @@ rpc.exports = { run() { return Python.perform(() => ({
     proc = None
     if sys.platform == "darwin":
         proc = subprocess.Popen([embed_host], env=env)
+        time.sleep(0.3)  # let dyld finish its own bootstrap before frida attaches
         pid = proc.pid
     else:
         pid = device.spawn([embed_host], env=env)

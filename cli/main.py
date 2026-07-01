@@ -80,6 +80,7 @@ def attach(args):
 
     device = frida.get_local_device()
     spawned_pid = None
+    spawned_proc = None
     frida_spawned = False
     if args.spawn:
         # Prefer explicit --arg tokens (no shell quoting); else shlex-split the program string.
@@ -91,8 +92,12 @@ def attach(args):
             # frida's spawn-then-attach-while-suspended path has public crash reports during
             # the target's own dyld/CoreFoundation bootstrap on recent macOS (frida/frida-core
             # #519, #524). Launch normally and attach once it's already running instead of
-            # spawn-gating + resume.
-            spawned_pid = subprocess.Popen(argv, env=dict(os.environ)).pid
+            # spawn-gating + resume. Keep the Popen handle: device.kill() on a pid frida
+            # never spawned itself doesn't reliably return on macOS, so teardown needs to
+            # go through the process handle instead (see main()'s finally block).
+            spawned_proc = subprocess.Popen(argv, env=dict(os.environ))
+            time.sleep(0.3)  # let dyld finish its own bootstrap before frida attaches
+            spawned_pid = spawned_proc.pid
         else:
             spawned_pid = device.spawn(argv, env=dict(os.environ))
             frida_spawned = True
@@ -122,7 +127,7 @@ def attach(args):
             pass
         time.sleep(0.1)
 
-    return device, spawned_pid, script, exports
+    return device, spawned_pid, spawned_proc, script, exports
 
 
 def cmd_info(exports, args):
@@ -186,7 +191,7 @@ def main(argv=None):
 
     args = parser.parse_args(argv)
 
-    device, spawned_pid, script, exports = attach(args)
+    device, spawned_pid, spawned_proc, script, exports = attach(args)
     try:
         {
             "info": cmd_info,
@@ -200,7 +205,16 @@ def main(argv=None):
             script.unload()
         except Exception:
             pass
-        if spawned_pid is not None:
+        if spawned_proc is not None:
+            try:
+                spawned_proc.kill()
+            except Exception:
+                pass
+            try:
+                spawned_proc.wait(timeout=5)
+            except Exception:
+                pass
+        elif spawned_pid is not None:
             try:
                 device.kill(spawned_pid)
             except Exception:

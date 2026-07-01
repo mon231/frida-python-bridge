@@ -9,7 +9,9 @@ Requires a prior ``npm run build``. Cross-platform (Windows / Linux / macOS); on
 Linux, self-injection needs ``sysctl kernel.yama.ptrace_scope=0``.
 """
 
+import glob as _glob
 import os
+import shutil
 import sys
 import time
 
@@ -21,6 +23,24 @@ FIXTURES = os.path.join(HERE, "fixtures")
 
 # Cache the (expensive) injection so the suite runs a single time per session.
 _cache = {}
+
+
+def _cleanup_frida_tmp():
+    """Remove Frida's per-run temp files (Windows: %LOCALAPPDATA%\\tmp\\frida-*; others: /tmp/frida-*)."""
+    if sys.platform == "win32":
+        base = os.path.join(os.environ.get("LOCALAPPDATA", ""), "tmp")
+    else:
+        base = "/tmp"
+    if not os.path.isdir(base):
+        return
+    for path in _glob.glob(os.path.join(base, "frida-*")):
+        try:
+            if os.path.isdir(path):
+                shutil.rmtree(path, ignore_errors=True)
+            else:
+                os.unlink(path)
+        except Exception:
+            pass
 
 
 def _build_agent():
@@ -106,6 +126,7 @@ def _inject_and_run(lo, hi):
 
     if errors:
         raise RuntimeError("frida agent reported errors: " + "; ".join(str(e) for e in errors))
+    _cleanup_frida_tmp()
     return out
 
 
@@ -147,3 +168,55 @@ def pytest_generate_tests(metafunc):
         return
     results = _run_suite()
     metafunc.parametrize("case", results, ids=[r["name"] for r in results])
+
+
+@pytest.fixture(scope="module")
+def live_session():
+    """A persistent live Frida session (exports, script) for non-parametrised tests.
+
+    Yields ``(exports, script)`` with the target interpreter already initialised.
+    The session is torn down (script unloaded, process killed, Frida tmp cleaned) at
+    module scope so all tests sharing this fixture reuse the same injection.
+    """
+    if sys.platform == "darwin":
+        pytest.skip("macOS frida injection not supported yet")
+    try:
+        import frida  # noqa: F401
+    except ImportError as exc:
+        pytest.skip("frida not installed: %s" % exc)
+
+    agent_source = _build_agent()
+    code = "import time\nwhile True: time.sleep(0.5)"
+    env = dict(os.environ, PYTHONPATH=FIXTURES + os.pathsep + os.environ.get("PYTHONPATH", ""))
+    target_python = os.environ.get("FPB_TARGET_PYTHON") or sys.executable
+
+    import frida
+
+    device = frida.get_local_device()
+    pid = device.spawn([target_python, "-c", code], env=env)
+    script = None
+    try:
+        session = device.attach(pid)
+        script = session.create_script(agent_source)
+        script.load()
+        device.resume(pid)
+        exports = getattr(script, "exports_sync", None) or script.exports
+        for _ in range(300):
+            try:
+                if exports.ready():
+                    break
+            except Exception:
+                pass
+            time.sleep(0.1)
+        yield exports, script
+    finally:
+        try:
+            if script is not None:
+                script.unload()
+        except Exception:
+            pass
+        try:
+            device.kill(pid)
+        except Exception:
+            pass
+        _cleanup_frida_tmp()

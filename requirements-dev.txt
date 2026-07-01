@@ -3,3 +3,6 @@
 frida>=17,<18
 frida-tools
 pytest>=7
+# PyInstaller + psutil are needed for test/test_pyinstaller.py; the test auto-skips when absent.
+pyinstaller
+psutil

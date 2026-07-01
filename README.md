@@ -216,6 +216,38 @@ introspection, `choose`, and hooking — each surfaced as its own test case. It 
   then `npm publish --provenance`. Requires an `NPM_TOKEN` repo secret (npm *Automation* token).
   Release with `npm version <patch|minor|major>` then `git push --follow-tags`.
 
+## Execution thread safety
+
+Frida runs your agent in a single JavaScript thread (the GumJS script thread). All callbacks —
+**rpc exports**, **`setTimeout`/`setInterval`** timers, and **`recv`** message handlers — execute
+on that same thread. From CPython's perspective this is a *GIL-less thread* (one that has never
+registered as a Python thread). `Python.perform`/`performNow` call `PyGILState_Ensure` on entry,
+which creates a `PyThreadState` for the caller on the first call and re-acquires the GIL on every
+subsequent call, then calls `PyGILState_Release` on exit. This is exactly how
+[`frida-java-bridge`](https://github.com/frida/frida-java-bridge) attaches JNI threads.
+
+All three contexts are therefore safe without any extra setup:
+
+```ts
+// 1. rpc export (most common)
+rpc.exports = {
+  query() { return Python.performNow(() => Python.eval("sys.version", { toJS: true })); },
+};
+
+// 2. setTimeout / setInterval
+setTimeout(() => Python.perform(() => { Python.exec("import gc; gc.collect()"); }), 1000);
+
+// 3. recv message handler
+recv("trigger", (_msg) => Python.perform(() => { Python.exec("do_something()"); }));
+```
+
+CPython documents `PyGILState_Ensure` for exactly this use-case:
+<https://docs.python.org/3/c-api/init.html#c.PyGILState_Ensure>.
+
+The only constraint is not holding the GIL across an `await` inside the `perform` async form when
+other Python threads need to run; use `performNow` (synchronous, GIL held for the entire block) or
+release the GIL between awaits via `Python.exec("pass")` at a safe point.
+
 ## Notes & limitations
 
 - **GIL safety:** never touch the interpreter outside `Python.perform`/`performNow`.

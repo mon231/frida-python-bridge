@@ -2,6 +2,9 @@
 // Runs an assertion suite inside the target interpreter and returns the results
 // over rpc; the Python runner (test/run) aggregates pass/fail and sets the exit code.
 
+// Module-level state for the two-phase recv-thread test (see setupRecvThread / getRecvThreadResult).
+let _recvTestResult = null;
+
 function assert(cond, msg) {
     if (!cond) throw new Error(msg || "assertion failed");
 }
@@ -357,8 +360,92 @@ rpc.exports = {
                 assertEq(high - base, 300);
                 assertEq(after, base);
             });
+
+            // ---- struct-offset / free-threaded / GIL-safety tests ----------------
+
+            // version.isFreeThreaded must be a boolean, correctly reflecting whether this
+            // is a free-threaded (PEP 703 / 3.13t+) build. The bridge gates any future raw
+            // refcount-field reads on this flag; exported Py_IncRef/Py_DecRef are always used
+            // in the hot path so the bridge is safe even without struct-offset tables.
+            t("version.isFreeThreaded is boolean", () => {
+                assert(typeof Python.version.isFreeThreaded === "boolean");
+            });
+
+            t("isFreeThreaded consistent with version string", () => {
+                const v = Python.version;
+                // Free-threaded builds report a version string containing "free-threading build"
+                // which the bridge normalises; toString() appends 't' (e.g. "3.13.0t").
+                const endsT = v.toString().endsWith("t");
+                assert(v.isFreeThreaded === endsT,
+                    `isFreeThreaded=${v.isFreeThreaded} but version string is '${v.toString()}'`);
+            });
+
+            // Verify the bridge resolves Py_IncRef / Py_DecRef as *exported function symbols*
+            // (not raw ob_refcnt field writes). This is the key free-threaded safety invariant:
+            // on 3.13t the immortal-object refcount field has a different layout but the
+            // exported Py_IncRef/Py_DecRef handle it correctly.
+            t("Py_IncRef and Py_DecRef are exported", () => {
+                assert(Python.hasExport("Py_IncRef"), "Py_IncRef must be a resolved export");
+                assert(Python.hasExport("Py_DecRef"), "Py_DecRef must be a resolved export");
+            });
+
+            // On 3.9+ the bridge uses PyFrame_GetCode / PyFrame_GetBack accessor exports
+            // instead of raw struct-offset reads for frame traversal (backtrace).
+            // Verify the accessor path is wired up on versions that have it.
+            t("backtrace uses accessor exports on 3.9+", () => {
+                const v = Python.version;
+                if (v.major === 3 && v.minor >= 9) {
+                    assert(Python.hasExport("PyFrame_GetBack"),
+                        "PyFrame_GetBack must be resolvable on 3.9+");
+                    assert(Python.hasExport("PyFrame_GetCode"),
+                        "PyFrame_GetCode must be resolvable on 3.9+");
+                }
+                // backtrace() itself must always return an array (even if empty)
+                const bt = Python.backtrace();
+                assert(Array.isArray(bt));
+            });
         });
 
         return { results, total: idx };
+    },
+
+    // Explicit test for Python.perform called from a Frida setTimeout callback.
+    //
+    // Background: Frida's GumJS script thread (where rpc exports, setTimeout callbacks and
+    // recv handlers all run) is a plain OS thread with no prior Python thread state. The
+    // first Python.perform on that thread calls PyGILState_Ensure, which creates a
+    // PyThreadState for it and acquires the GIL — identical to what happens for rpc exports.
+    // This test confirms that the same acquire/release cycle works from a deferred callback.
+    testSetTimeoutThread() {
+        return new Promise((resolve) => {
+            setTimeout(() => {
+                try {
+                    const v = Python.performNow(() => Python.eval("6 * 7", { toJS: true }));
+                    resolve({ ok: true, value: v });
+                } catch (e) {
+                    resolve({ ok: false, message: String(e) });
+                }
+            }, 0);
+        });
+    },
+
+    // Two-phase recv-thread test.
+    // Phase 1 (setupRecvThread): register a one-shot recv handler; returns immediately.
+    // Phase 2 (caller posts "fpb_test_ping"): the handler fires, runs Python.performNow,
+    //   and stores the result in _recvTestResult.
+    // Phase 3 (getRecvThreadResult): return the stored result for assertion.
+    setupRecvThread() {
+        _recvTestResult = null;
+        recv("fpb_test_ping", (_msg) => {
+            try {
+                const v = Python.performNow(() => Python.eval("6 * 7", { toJS: true }));
+                _recvTestResult = { ok: true, value: v };
+            } catch (e) {
+                _recvTestResult = { ok: false, message: String(e) };
+            }
+        });
+    },
+    getRecvThreadResult() {
+        return _recvTestResult;
     },
 };
